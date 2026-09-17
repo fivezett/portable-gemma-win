@@ -8,8 +8,8 @@
     "dev": "bun run src/index.ts",
     "check": "tsc --noEmit",
     "test": "bun test",
-    "build:win": "bun build --compile --target=bun-windows-x64 --minify --outfile ../dist/gemma-mcp.exe src/index.ts",
-    "build:win:native": "bun build --compile --target=bun-windows-x64 --minify --windows-hide-console --outfile ../dist/gemma-mcp.exe src/index.ts"
+    "build:win": "mkdir -p ../dist && bun build --compile --target=bun-windows-x64 --minify --outfile ../dist/gemma-mcp.exe src/index.ts",
+    "build:win:native": "mkdir -p ../dist && bun build --compile --target=bun-windows-x64 --minify --windows-hide-console --outfile ../dist/gemma-mcp.exe src/index.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",

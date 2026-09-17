@@ -40,7 +40,7 @@ jobs:
       should_release: ${{ steps.decide.outputs.should_release }}
       needs_tag: ${{ steps.decide.outputs.needs_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -111,7 +111,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
