@@ -1,0 +1,126 @@
+# Reusable workflow shared by CI and the release pipeline.
+# Artifacts are handed to the calling workflow through the artifact store.
+name: build
+
+on:
+  workflow_call:
+    outputs:
+      version:
+        description: "Version from mcp-server/package.json"
+        value: ${{ jobs.test.outputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Typecheck and test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          # The Bun version is pinned by "packageManager" in that file.
+          bun-version-file: mcp-server/package.json
+
+      - name: Install dependencies
+        working-directory: mcp-server
+        run: bun install --frozen-lockfile
+
+      - name: Read version
+        id: version
+        run: echo "version=$(node -p "require('./mcp-server/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Typecheck
+        working-directory: mcp-server
+        run: bun run check
+
+      - name: Test
+        working-directory: mcp-server
+        run: bun test
+
+  exe:
+    name: Windows executable
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: mcp-server/package.json
+
+      - name: Install dependencies
+        working-directory: mcp-server
+        run: bun install --frozen-lockfile
+
+      # Building on Windows allows --windows-hide-console, which keeps a console window
+      # from appearing when an MCP client launches the server over stdio.
+      - name: Build
+        working-directory: mcp-server
+        run: bun run build:win:native
+
+      # Compiling bundles everything into one module graph and changes evaluation order.
+      # Running the suite against the artifact is the only way to catch breakage from that.
+      - name: Smoke-test the artifact
+        working-directory: mcp-server
+        env:
+          GEMMA_MCP_BIN: ${{ github.workspace }}\dist\gemma-mcp.exe
+        run: bun test
+
+      # A hidden-console executable does not always hand its output back to the calling
+      # shell, so redirect through Start-Process instead of capturing it directly.
+      - name: Check the reported version
+        shell: pwsh
+        run: |
+          Start-Process -FilePath ./dist/gemma-mcp.exe -ArgumentList "--version" `
+            -Wait -NoNewWindow -RedirectStandardOutput version.txt
+          $version = (Get-Content version.txt -Raw).Trim()
+          Write-Host "gemma-mcp $version"
+          if ($version -ne "${{ needs.test.outputs.version }}") {
+            throw "Executable reports $version but package.json says ${{ needs.test.outputs.version }}"
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gemma-mcp-exe
+          path: dist/gemma-mcp.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  package:
+    name: Archive and installer
+    needs: [test, exe]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: mcp-server/package.json
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: gemma-mcp-exe
+          path: dist
+
+      - name: Install NSIS
+        run: sudo apt-get update && sudo apt-get install -y nsis
+
+      # Same script developers run locally, packaging the executable built on Windows.
+      - name: Package
+        run: bun run scripts/build.ts --package-only
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portable-gemma-win
+          path: |
+            dist/gemma-mcp.exe
+            dist/portable-gemma-win-x64-*.zip
+            dist/portable-gemma-setup-*.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,60 @@
+# gemma-mcp configuration
+#
+# Precedence: environment variables set by the MCP client > OS environment > this file > defaults.
+# Relative paths resolve against this folder (the application root).
+
+[server]
+# llama-server listens here. Not exposed beyond localhost.
+host = "127.0.0.1"
+port = 18080
+# Start llama-server on the first tool call if nothing is answering yet
+autostart = true
+# Empty means runtime/llama/llama-server.exe
+binary = ""
+# Serve the llama.cpp web UI at http://127.0.0.1:18080
+webui = true
+# When set, passed to llama-server as --api-key
+api_key = ""
+# Parallel slots. Each one costs VRAM, so leave this at 1 on an 8 GB card.
+parallel = 1
+
+[model]
+# Hugging Face spec, "<repo>:<quantisation>".
+#   Default targets 8 GB of VRAM: Gemma 4 E4B
+#   With 12-16 GB, try "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
+hf = "unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL"
+# Point at a local .gguf instead; takes precedence over `hf`
+path = ""
+# Multimodal projector for image input. Empty lets llama.cpp resolve it.
+mmproj = ""
+alias = "gemma"
+
+[runtime]
+# Context length. Longer contexts grow the KV cache, which is VRAM you no longer have
+# for weights. 16384 is a comfortable ceiling for E4B on 8 GB.
+ctx = 16384
+# Layers to offload to the GPU. 99 means all of them.
+ngl = 99
+# Flash attention: on / off / auto
+flash_attn = "on"
+# Extra arguments forwarded to llama-server verbatim; quoting is supported
+extra_args = ""
+
+[sampling]
+# Values recommended for the Gemma family
+temperature = 1.0
+top_p = 0.95
+top_k = 64
+max_tokens = 2048
+
+[timeouts]
+# Startup until the server answers. Generous, because the first run downloads the model.
+startup_ms = 900000
+# Ceiling for a single generation
+request_ms = 600000
+
+[log]
+# debug / info / warn / error
+level = "info"
+# Relay llama-server output into logs/gemma-mcp.log
+llama_output = true

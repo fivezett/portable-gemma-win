@@ -1,0 +1,104 @@
+# Automated releases.
+#
+# Three entry paths:
+#   1. a push to main whose package.json version has no tag yet -> tag it and release
+#   2. a v* tag push                                            -> release that tag
+#   3. a manual run                                             -> release the given version
+#
+# An existing tag always means "do nothing", so a release never happens twice.
+# The decision itself lives in scripts/ci/release-plan.ts.
+name: release
+
+on:
+  # A paths filter cannot be combined with tags (they would be ANDed and tag pushes would
+  # be dropped), so the tag check in release-plan.ts is what prevents duplicate releases.
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (defaults to package.json)"
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Decide
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      previous_tag: ${{ steps.plan.outputs.previous_tag }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      should_release: ${{ steps.plan.outputs.should_release }}
+      needs_tag: ${{ steps.plan.outputs.needs_tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: mcp-server/package.json
+
+      - name: Plan the release
+        id: plan
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: bun run scripts/ci/release-plan.ts
+
+  build:
+    name: Build
+    needs: detect
+    if: needs.detect.outputs.should_release == 'true'
+    uses: ./.github/workflows/build.yml
+
+  publish:
+    name: Publish
+    needs: [detect, build]
+    if: needs.detect.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: mcp-server/package.json
+
+      - name: Confirm the built version
+        env:
+          BUILT: ${{ needs.build.outputs.version }}
+          EXPECTED: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$BUILT" != "$EXPECTED" ]; then
+            echo "::error::Built $BUILT but the release targets $EXPECTED"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: portable-gemma-win
+          path: dist
+
+      - name: Tag and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.detect.outputs.tag }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          PREVIOUS_TAG: ${{ needs.detect.outputs.previous_tag }}
+          NEEDS_TAG: ${{ needs.detect.outputs.needs_tag }}
+          PRERELEASE: ${{ needs.detect.outputs.prerelease }}
+        run: bun run scripts/ci/publish-release.ts

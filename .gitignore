@@ -1,0 +1,12 @@
+# 取得物(配布物には含めるが、リポジトリには入れない)
+/runtime/
+/models/
+/logs/
+/dist/
+/build/
+
+# 実際に使う設定。テンプレートは config/gemma.toml.example
+/config/gemma.toml
+
+node_modules/
+*.log
