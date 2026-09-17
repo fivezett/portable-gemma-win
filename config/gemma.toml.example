@@ -1,0 +1,60 @@
+# gemma-mcp 設定ファイル
+#
+# 優先順位: MCP クライアントが渡す環境変数 > OS の環境変数 > このファイル > 既定値
+# 相対パスはこのフォルダ(アプリのルート)からの相対として解決される。
+
+[server]
+# llama-server の待ち受け先。外部公開はしない。
+host = "127.0.0.1"
+port = 18080
+# ツールが呼ばれたときに llama-server が居なければ自動起動する
+autostart = true
+# 空なら runtime/llama/llama-server.exe を使う
+binary = ""
+# llama.cpp の WebUI (http://127.0.0.1:18080) を有効にする
+webui = true
+# 空でなければ llama-server に --api-key を渡す
+api_key = ""
+# 同時処理スロット数。VRAM を食うので 8GB 環境では 1 のままが無難
+parallel = 1
+
+[model]
+# Hugging Face からの取得指定 (<repo>:<量子化>)。
+#   8GB VRAM の既定: Gemma 4 E4B
+#   12〜16GB なら "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL" などに変更する
+hf = "unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL"
+# ローカルの .gguf を直接使う場合はこちら(指定すると hf より優先)
+path = ""
+# 画像入力を使う場合の projector。空なら llama.cpp の自動解決に任せる
+mmproj = ""
+alias = "gemma"
+
+[runtime]
+# コンテキスト長。長くするほど KV キャッシュで VRAM を食う。
+#   8GB / E4B Q4 なら 16384 前後が目安
+ctx = 16384
+# GPU に載せる層数。99 = 全部載せる
+ngl = 99
+# flash attention: on / off / auto
+flash_attn = "on"
+# llama-server にそのまま渡す追加引数(引用符可)
+extra_args = ""
+
+[sampling]
+# Gemma 系の推奨値
+temperature = 1.0
+top_p = 0.95
+top_k = 64
+max_tokens = 2048
+
+[timeouts]
+# 起動〜応答可能まで。初回はモデルのダウンロードを含むため長めにしてある
+startup_ms = 900000
+# 1 回の生成あたりの上限
+request_ms = 600000
+
+[log]
+# debug / info / warn / error
+level = "info"
+# llama-server の出力を logs/gemma-mcp.log に転記する
+llama_output = true

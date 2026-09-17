@@ -1,0 +1,88 @@
+name: build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: 型チェックとテスト
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: 依存関係
+        working-directory: mcp-server
+        run: bun install --frozen-lockfile
+      - name: 型チェック
+        working-directory: mcp-server
+        run: bun run check
+      - name: テスト
+        working-directory: mcp-server
+        run: bun test
+
+  exe:
+    name: Windows 実行ファイル
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: 依存関係
+        working-directory: mcp-server
+        run: bun install --frozen-lockfile
+      # Windows 上でビルドすると --windows-hide-console が使える。
+      # MCP クライアントから起動されたときにコンソールが出ない。
+      - name: ビルド
+        working-directory: mcp-server
+        run: bun run build:win:native
+      - name: 動作確認
+        run: ./dist/gemma-mcp.exe --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gemma-mcp-exe
+          path: dist/gemma-mcp.exe
+          if-no-files-found: error
+
+  package:
+    name: zip とインストーラ
+    needs: exe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gemma-mcp-exe
+          path: dist
+      - name: NSIS を導入
+        run: sudo apt-get update && sudo apt-get install -y nsis
+      - name: 配布物を作成
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./mcp-server/package.json').version")"
+          staging=build/staging
+          mkdir -p "$staging/scripts" "$staging/docs" "$staging/config"
+          cp dist/gemma-mcp.exe README.md "$staging/"
+          cp scripts/fetch-runtime.ps1 scripts/fetch-model.ps1 scripts/start-llama-server.cmd "$staging/scripts/"
+          cp docs/*.md "$staging/docs/"
+          cp config/gemma.toml.example "$staging/config/"
+          (cd "$staging" && zip -qr "../../dist/portable-gemma-win-x64-$version.zip" .)
+          makensis -V2 "-DSTAGING=$PWD/$staging" "-DVERSION=$version" installer/portable-gemma.nsi
+          ls -lh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portable-gemma-win
+          path: |
+            dist/portable-gemma-win-x64-*.zip
+            dist/portable-gemma-setup-*.exe
+          if-no-files-found: error
