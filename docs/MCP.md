@@ -30,6 +30,9 @@ claude mcp add gemma -- "C:\Users\<user>\AppData\Local\PortableGemma\gemma-mcp.e
 `gemma-mcp.exe print-config` prints this for the current machine; the installer writes the
 same content to `mcp-config.json`.
 
+Other commands: `doctor` checks the environment, `set-backend <cuda|openvino>` selects the
+runtime, and `serve` starts llama-server on its own.
+
 `GEMMA_HOME` is optional. Without it, the folder containing the executable is used as the
 application root, which is what you want unless the executable was copied elsewhere on its own.
 

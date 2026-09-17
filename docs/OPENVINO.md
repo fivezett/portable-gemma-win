@@ -16,20 +16,23 @@ versions live in `openvino/build-config.json`, and the build follows upstream's 
 
 ## Installing
 
+The installer offers this as a choice on its components page, and preselects it on a
+machine without an NVIDIA driver. From an extracted archive, or to add it to an existing
+install:
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\fetch-runtime.ps1 -Backend openvino
+.\gemma-mcp.exe set-backend openvino
 ```
 
-That downloads `llama-openvino-<tag>-win-x64.zip` from this project's latest release and
-extracts it into `runtime\llama-openvino\`. The CUDA runtime, if present, is left alone —
-both backends can sit side by side and be switched with one configuration line.
+The download lands in `runtime\llama-openvino\`, leaving any CUDA runtime alone — both
+backends can sit side by side, and `set-backend` switches between them. It also moves
+`model.hf` to the quantisation this backend was validated against, unless you picked a
+model yourself.
 
-Then set the backend in `config\gemma.toml`:
+Pick the device in `config\gemma.toml`:
 
 ```toml
-[runtime]
-backend = "openvino"
-
 [openvino]
 device = "GPU"   # CPU / GPU / NPU
 ```
@@ -59,6 +62,8 @@ builds are the `bartowski` ones:
 [model]
 hf = "bartowski/google_gemma-4-E4B-it-GGUF:Q4_K_M"
 ```
+
+`set-backend openvino` selects that automatically.
 
 What upstream reports for Gemma 4, all at `Q4_K_M`:
 

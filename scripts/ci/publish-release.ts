@@ -75,14 +75,12 @@ const openvinoSection =
         "> Take the asset from an earlier release, or run the `openvino-runtime` workflow and attach it.",
       ].join("\n");
 
-const checksums = (await Bun.file(join(dist, "SHA256SUMS.txt")).text()).trimEnd();
 const template = await Bun.file(join(root, ".github", "release-notes-template.md")).text();
 
 const header = template
   .replaceAll("{{VERSION}}", version)
   .replaceAll("{{TAG}}", tag)
   .replaceAll("{{REPOSITORY}}", repository)
-  .replaceAll("{{CHECKSUMS}}", checksums)
   .replaceAll("{{OPENVINO}}", openvinoSection);
 
 const notesPath = join(root, "release-notes.md");
@@ -95,7 +93,6 @@ const assets = [
   ...(await Array.fromAsync(new Bun.Glob("portable-gemma-win-x64-*.zip").scan({ cwd: dist, absolute: true }))),
   join(dist, "gemma-mcp.exe"),
   ...openvinoAssets,
-  join(dist, "SHA256SUMS.txt"),
 ];
 
 if (dryRun) {

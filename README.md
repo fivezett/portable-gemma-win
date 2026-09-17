@@ -33,28 +33,32 @@ MCP client (Claude Code, ...)
 | Disk | ~300 MB of runtime plus 3-8 GB of model weights |
 
 CUDA 13 dropped Pascal and older, so on a GTX 10xx the setup script falls back to a
-CUDA 12 build automatically. On Intel hardware, use the OpenVINO runtime instead:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\fetch-runtime.ps1 -Backend openvino
-```
-
-See [docs/OPENVINO.md](docs/OPENVINO.md).
+CUDA 12 build automatically. For the Intel path, see [docs/OPENVINO.md](docs/OPENVINO.md).
 
 ## Setup
 
 ### With the installer
 
 Run `portable-gemma-setup-<version>.exe`. It needs no administrator rights and installs
-into `%LOCALAPPDATA%\PortableGemma` by default. The runtime and the model can be
-downloaded from the installer as well.
+into `%LOCALAPPDATA%\PortableGemma` by default.
+
+The components page asks which inference runtime to install — **NVIDIA (CUDA)** or
+**Intel (OpenVINO)** — and preselects one by looking at the hardware. Whichever you pick is
+downloaded and written into `config\gemma.toml`, so there is nothing to configure
+afterwards. The model can be downloaded there too, or left to the first tool call.
 
 ### From the archive
 
 ```powershell
 # 1. Extract anywhere, including a USB stick
-# 2. Fetch the llama.cpp runtime
+
+# 2. Fetch a runtime -- NVIDIA:
 powershell -ExecutionPolicy Bypass -File .\scripts\fetch-runtime.ps1
+.\gemma-mcp.exe set-backend cuda
+
+#    ...or Intel (CPU, integrated/Arc GPU, NPU):
+powershell -ExecutionPolicy Bypass -File .\scripts\fetch-runtime.ps1 -Backend openvino
+.\gemma-mcp.exe set-backend openvino
 
 # 3. Fetch the model (optional; it downloads on the first tool call otherwise)
 powershell -ExecutionPolicy Bypass -File .\scripts\fetch-model.ps1
@@ -62,6 +66,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\fetch-model.ps1
 # 4. Check the environment
 .\gemma-mcp.exe doctor
 ```
+
+`set-backend` writes the choice into `config\gemma.toml` and, when the model is still the
+other backend's default, switches that too. A model you chose yourself is left alone.
 
 ## Registering with an MCP client
 
