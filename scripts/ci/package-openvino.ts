@@ -43,6 +43,18 @@ async function findOne(cwd: string, pattern: string): Promise<string | null> {
   return null;
 }
 
+/** Directory entries down to `depth` levels, for reporting an unexpected layout. */
+async function listTree(dir: string, depth: number, prefix = ""): Promise<string[]> {
+  if (depth === 0 || !existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const shown = `${prefix}${entry.name}${entry.isDirectory() ? "/" : ""}`;
+    out.push(shown);
+    if (entry.isDirectory()) out.push(...(await listTree(join(dir, entry.name), depth - 1, `${shown}`)));
+  }
+  return out;
+}
+
 async function copyGlob(cwd: string, pattern: string, label: string): Promise<number> {
   if (!existsSync(cwd)) {
     console.log(`    ${label}: ${cwd} does not exist, skipping`);
@@ -81,13 +93,20 @@ const ovBin = join(openvinoRoot, "runtime", "bin", "intel64", "Release");
 const ovDlls = await copyGlob(ovBin, "*.dll", "OpenVINO runtime");
 if (ovDlls === 0) fail(`No OpenVINO DLLs found in ${ovBin}`);
 
-// Without plugins.xml the runtime cannot resolve the CPU, GPU or NPU plugins.
-const pluginsXml = join(ovBin, "plugins.xml");
-if (!existsSync(pluginsXml)) fail(`plugins.xml not found in ${ovBin}`);
-await copyFile(pluginsXml, join(staging, "plugins.xml"));
-console.log("    plugins.xml: 1 file(s)");
-
 await copyGlob(join(openvinoRoot, "runtime", "3rdparty", "tbb", "bin"), "*.dll", "TBB");
+
+// Without plugins.xml the runtime cannot resolve the CPU, GPU or NPU plugins, and it is a
+// required file for local distribution. Its location has moved between packages, so search
+// the tree instead of assuming one.
+const pluginsXml = await findOne(join(openvinoRoot, "runtime"), "**/plugins.xml");
+if (!pluginsXml) {
+  console.error("Searched for plugins.xml under:", join(openvinoRoot, "runtime"));
+  console.error("Layout found there:");
+  for (const entry of await listTree(join(openvinoRoot, "runtime"), 3)) console.error(`  ${entry}`);
+  fail("plugins.xml not found anywhere under the OpenVINO runtime directory");
+}
+await copyFile(pluginsXml, join(staging, "plugins.xml"));
+console.log(`    plugins.xml: from ${pluginsXml}`);
 
 console.log("==> Collecting licences");
 const licences: [string, string][] = [
