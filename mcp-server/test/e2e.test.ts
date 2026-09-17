@@ -202,6 +202,57 @@ describe("gemma_status", () => {
   });
 });
 
+describe("OpenVINO backend", () => {
+  let openvinoClient: StdioClient;
+  let openvinoHome: string;
+
+  beforeAll(async () => {
+    openvinoHome = mkdtempSync(join(tmpdir(), "gemma-mcp-ov-"));
+    openvinoClient = new StdioClient(command, {
+      GEMMA_HOME: openvinoHome,
+      GEMMA_PORT: String(mock.port),
+      GEMMA_HOST: "127.0.0.1",
+      GEMMA_AUTOSTART: "0",
+      GEMMA_LOG_LEVEL: "error",
+      GEMMA_BACKEND: "openvino",
+      GEMMA_OPENVINO_DEVICE: "GPU",
+    });
+
+    await openvinoClient.request("initialize", {
+      protocolVersion: LATEST_PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: "test-client", version: "0.0.0" },
+    });
+    openvinoClient.notify("notifications/initialized");
+  });
+
+  afterAll(async () => {
+    await openvinoClient?.close();
+    if (openvinoHome) rmSync(openvinoHome, { recursive: true, force: true });
+  });
+
+  test("reports the backend and device in the status", async () => {
+    const result = (await openvinoClient.request("tools/call", {
+      name: "gemma_status",
+      arguments: {},
+    })) as ToolResult;
+    const structured = (result.structuredContent ?? result.result) as Record<string, unknown> | undefined;
+
+    expect(structured?.backend).toBe("openvino");
+    expect(structured?.device).toBe("GPU");
+  });
+
+  test("refuses image input, which the backend does not support yet", async () => {
+    const result = (await openvinoClient.request("tools/call", {
+      name: "gemma_vision",
+      arguments: { prompt: "what is this?", image_base64: "iVBORw0KGgo=" },
+    })) as ToolResult;
+
+    expect(result.isError).toBe(true);
+    expect(firstText(result)).toContain("OpenVINO");
+  });
+});
+
 describe("stdout hygiene", () => {
   test("nothing but JSON-RPC reaches stdout", () => {
     const strays = client.stderr.filter((line) => line.includes("non-JSON output on stdout"));

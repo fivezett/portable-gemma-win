@@ -3,7 +3,9 @@
 A portable **Gemma 4 + llama.cpp (CUDA)** setup for Windows that serves the local model
 over **MCP**, so clients like Claude Code can call it as a tool.
 
-- **Nothing to install**: no CUDA Toolkit, no Node.js. An NVIDIA graphics driver is enough.
+- **Nothing to install**: no CUDA Toolkit, no Node.js. A graphics driver is enough.
+- **NVIDIA or Intel**: the CUDA build for GeForce and RTX, or the OpenVINO build for Intel
+  CPU, integrated/Arc GPU and NPU.
 - **Carry the folder**: executable, runtime, models and configuration all live in one directory.
 - **No API bills, no data leaving the machine**: inference runs on the local GPU.
 
@@ -25,13 +27,19 @@ MCP client (Claude Code, ...)
 | | |
 |---|---|
 | OS | Windows 10 / 11 (x64) |
-| GPU | NVIDIA. The CUDA 13 builds need **Turing (GTX 1600 / RTX 2000) or newer** |
-| Driver | An NVIDIA graphics driver. **No CUDA Toolkit.** |
+| GPU | NVIDIA for the CUDA build (**Turing / GTX 1600 / RTX 2000 or newer** for CUDA 13), or Intel for the OpenVINO build |
+| Driver | A graphics driver. **No CUDA Toolkit, no OpenVINO install.** |
 | VRAM | 8 GB runs Gemma 4 E4B at Q4. 12 GB or more opens up the 12B model |
 | Disk | ~300 MB of runtime plus 3-8 GB of model weights |
 
 CUDA 13 dropped Pascal and older, so on a GTX 10xx the setup script falls back to a
-CUDA 12 build automatically.
+CUDA 12 build automatically. On Intel hardware, use the OpenVINO runtime instead:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\fetch-runtime.ps1 -Backend openvino
+```
+
+See [docs/OPENVINO.md](docs/OPENVINO.md).
 
 ## Setup
 
@@ -95,6 +103,7 @@ PortableGemma/
 ├── mcp-config.json            client configuration (written by the installer)
 ├── config/gemma.toml          configuration
 ├── runtime/llama/             llama.cpp binaries and CUDA DLLs
+├── runtime/llama-openvino/    llama.cpp with the OpenVINO backend (optional)
 ├── models/                    GGUF files (LLAMA_CACHE)
 ├── logs/gemma-mcp.log         logs
 ├── scripts/                   download and launch scripts
@@ -104,6 +113,7 @@ PortableGemma/
 ## Documentation
 
 - [docs/SETUP.md](docs/SETUP.md) — setup, model selection, troubleshooting
+- [docs/OPENVINO.md](docs/OPENVINO.md) — the Intel CPU / GPU / NPU backend
 - [docs/MCP.md](docs/MCP.md) — client registration and the tool reference
 - [docs/SPEC.md](docs/SPEC.md) — the design and why it looks like this
 - [docs/RELEASE.md](docs/RELEASE.md) — CI/CD and how releases work

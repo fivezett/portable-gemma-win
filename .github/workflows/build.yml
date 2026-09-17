@@ -53,6 +53,26 @@ jobs:
         with:
           bun-version-file: mcp-server/package.json
 
+      # The setup scripts ship in the release archive, and this is the only job with a
+      # PowerShell that can parse them. A syntax error here reaches users otherwise.
+      - name: Parse the PowerShell scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($file in Get-ChildItem -Path scripts -Filter *.ps1) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $file.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) {
+              $failed = $true
+              Write-Host "::error file=scripts/$($file.Name)::$($errors.Count) parse error(s)"
+              $errors | ForEach-Object { Write-Host "  line $($_.Extent.StartLineNumber): $($_.Message)" }
+            } else {
+              Write-Host "OK  scripts/$($file.Name)"
+            }
+          }
+          if ($failed) { throw "PowerShell parse errors" }
+
       - name: Install dependencies
         working-directory: mcp-server
         run: bun install --frozen-lockfile

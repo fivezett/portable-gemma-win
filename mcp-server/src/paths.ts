@@ -27,6 +27,10 @@ export const paths = {
   root: appRoot,
   /** llama.cpp Windows binaries and the bundled CUDA DLLs */
   runtimeDir: join(appRoot, "runtime", "llama"),
+  /** llama.cpp built with the OpenVINO backend, plus the OpenVINO runtime DLLs */
+  openvinoRuntimeDir: join(appRoot, "runtime", "llama-openvino"),
+  /** OpenVINO compiled-model cache, kept inside the app folder so it travels with it */
+  openvinoCacheDir: join(appRoot, "cache", "openvino"),
   /** GGUF storage, passed to llama.cpp as LLAMA_CACHE */
   modelsDir: join(appRoot, "models"),
   configDir: join(appRoot, "config"),

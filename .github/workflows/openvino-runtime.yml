@@ -1,0 +1,148 @@
+# Builds llama.cpp with the OpenVINO backend for Windows.
+#
+# Upstream ships no prebuilt Windows binaries for this backend (the OpenVINO releases cover
+# Ubuntu only), so it has to be compiled from source with -DGGML_OPENVINO=ON. The result
+# runs on Intel CPUs, integrated and discrete GPUs, and NPUs.
+#
+# Pinned versions live in openvino/build-config.json. The steps follow
+# ggml-org/llama.cpp .github/workflows/build-openvino.yml.
+#
+# This is slow (tens of minutes), so it is not part of the ordinary CI run; the release
+# workflow calls it, and it can be triggered by hand.
+name: openvino-runtime
+
+on:
+  workflow_call:
+    outputs:
+      artifact:
+        description: "Name of the uploaded artifact"
+        value: openvino-runtime
+      llamacpp_tag:
+        description: "llama.cpp tag the runtime was built from"
+        value: ${{ jobs.build.outputs.llamacpp_tag }}
+  workflow_dispatch:
+  # Exercise the pipeline on the pull requests that can break it. Ordinary changes never
+  # touch these paths, so this does not slow the usual CI run down.
+  pull_request:
+    paths:
+      - ".github/workflows/openvino-runtime.yml"
+      - "openvino/**"
+      - "scripts/ci/package-openvino.ts"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build llama.cpp with OpenVINO
+    runs-on: windows-2022
+    timeout-minutes: 120
+    outputs:
+      llamacpp_tag: ${{ steps.config.outputs.llamacpp_tag }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: mcp-server/package.json
+
+      - name: Read pinned versions
+        id: config
+        shell: bash
+        run: |
+          set -euo pipefail
+          config=openvino/build-config.json
+          {
+            echo "llamacpp_tag=$(node -p "require('./$config').llamacpp_tag")"
+            echo "ov_major=$(node -p "require('./$config').openvino_version_major")"
+            echo "ov_full=$(node -p "require('./$config').openvino_version_full")"
+          } >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
+      - name: Check out llama.cpp
+        uses: actions/checkout@v5
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ steps.config.outputs.llamacpp_tag }}
+          path: llama.cpp
+          fetch-depth: 1
+
+      - name: Cache the OpenVINO toolkit
+        id: cache-openvino
+        uses: actions/cache@v4
+        with:
+          path: openvino_toolkit
+          key: openvino-toolkit-${{ steps.config.outputs.ov_full }}-${{ runner.os }}
+
+      - name: Download the OpenVINO runtime
+        if: steps.cache-openvino.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $major = "${{ steps.config.outputs.ov_major }}"
+          $full = "${{ steps.config.outputs.ov_full }}"
+          $url = "https://storage.openvinotoolkit.org/repositories/openvino/packages/$major/windows/openvino_toolkit_windows_${full}_x86_64.zip"
+          Write-Host "Downloading $url"
+          $ProgressPreference = "SilentlyContinue"
+          Invoke-WebRequest -Uri $url -OutFile openvino.zip
+          Expand-Archive -Path openvino.zip -DestinationPath openvino_toolkit -Force
+          Remove-Item openvino.zip
+
+      - name: Cache vcpkg
+        id: cache-vcpkg
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-opencl-${{ runner.os }}
+
+      # OpenCL is a build-time dependency of the OpenVINO GPU plugin.
+      - name: Install OpenCL through vcpkg
+        shell: pwsh
+        run: |
+          if (-not (Test-Path C:\vcpkg)) {
+            git clone --depth 1 https://github.com/microsoft/vcpkg C:\vcpkg
+            & C:\vcpkg\bootstrap-vcpkg.bat
+          }
+          & C:\vcpkg\vcpkg install opencl
+
+      - name: Build
+        shell: cmd
+        working-directory: llama.cpp
+        run: |
+          for /d %%i in (..\openvino_toolkit\*) do set OPENVINO_ROOT=%%i
+
+          if not exist "%OPENVINO_ROOT%\runtime\cmake\OpenVINOConfig.cmake" (
+              echo ERROR: OpenVINOConfig.cmake not found under %OPENVINO_ROOT%
+              exit /b 1
+          )
+
+          call "%OPENVINO_ROOT%\setupvars.bat"
+
+          cmake -B build\ReleaseOV -G "Visual Studio 17 2022" ^
+            -A x64 ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DGGML_OPENVINO=ON ^
+            -DLLAMA_BUILD_TESTS=OFF ^
+            -DLLAMA_BUILD_EXAMPLES=OFF ^
+            -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake || exit /b 1
+
+          cmake --build build\ReleaseOV --config Release -- /m || exit /b 1
+
+      - name: Package
+        run: bun run scripts/ci/package-openvino.ts
+
+      # The runtime cannot be exercised here: GitHub's Windows runners have no Intel GPU or
+      # NPU, and the CPU device still needs the whole toolchain. Confirm it at least starts.
+      - name: Check the binary loads
+        shell: pwsh
+        run: |
+          $exe = "build/openvino-staging/llama-server.exe"
+          Start-Process -FilePath $exe -ArgumentList "--version" `
+            -Wait -NoNewWindow -RedirectStandardOutput ov-version.txt -RedirectStandardError ov-version-err.txt
+          Get-Content ov-version.txt, ov-version-err.txt | Out-Host
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openvino-runtime
+          path: dist/llama-openvino-*.zip
+          if-no-files-found: error
+          retention-days: 7

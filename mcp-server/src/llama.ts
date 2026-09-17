@@ -62,6 +62,93 @@ function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/**
+ * Arguments for llama-server. Exported so the backend-specific shape can be tested
+ * without spawning anything: a wrong flag here is invisible until inference is slow.
+ */
+export function buildServerArgs(config: Config): string[] {
+  const { server, model, runtime, openvino } = config;
+  const openvinoBackend = runtime.backend === "openvino";
+
+  // llama-server only serves one chat session when OpenVINO runs stateful.
+  const parallel = openvinoBackend && openvino.stateful ? 1 : server.parallel;
+
+  const args = [
+    "--host",
+    server.host,
+    "--port",
+    String(server.port),
+    "--alias",
+    model.alias,
+    "-c",
+    String(runtime.ctx),
+    "-np",
+    String(parallel),
+    "-fa",
+    runtime.flashAttn,
+    // Chat template support, required for structured output and tool calls
+    "--jinja",
+  ];
+
+  if (openvinoBackend) {
+    // The OpenVINO backend places the whole graph on its device, so -ngl means nothing.
+    // Warmup only pays for a graph compile whose result is thrown away.
+    args.push("--no-warmup");
+  } else {
+    args.push("-ngl", String(runtime.ngl));
+  }
+
+  if (model.path !== "") args.push("-m", model.path);
+  else args.push("-hf", model.hf);
+
+  if (model.mmproj !== "") args.push("--mmproj", model.mmproj);
+  if (!server.webui) args.push("--no-webui");
+  if (server.apiKey !== "") args.push("--api-key", server.apiKey);
+
+  args.push(...runtime.extraArgs);
+  return args;
+}
+
+/**
+ * Environment for the child process, including the OpenVINO backend controls.
+ * Getting one of these variables wrong means silently running on the wrong device.
+ */
+export function buildServerEnv(config: Config, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...base,
+    // Pin GGUF storage inside the app folder so the whole thing stays portable
+    LLAMA_CACHE: paths.modelsDir,
+  };
+
+  if (config.runtime.backend !== "openvino") return env;
+
+  const { openvino, runtime } = config;
+  const device = openvino.device;
+  const isNpu = device.startsWith("NPU");
+
+  env.GGML_OPENVINO_DEVICE = device;
+  env.GGML_OPENVINO_STATEFUL_EXECUTION = openvino.stateful ? "1" : "0";
+
+  if (openvino.cache && !isNpu) {
+    // Caching is not supported on NPU; elsewhere it turns a minutes-long graph
+    // compile into a blob load on every later start.
+    env.GGML_OPENVINO_CACHE_DIR = paths.openvinoCacheDir;
+    env.GGML_OPENVINO_COMPILED_MODEL_CACHE_DIR = paths.openvinoCacheDir;
+  }
+
+  if (isNpu) {
+    env.GGML_OPENVINO_PREFILL_CHUNK_SIZE = String(openvino.npuPrefillChunk);
+    if (runtime.ctx > 4096) {
+      log.warn(
+        `OpenVINO NPU with ctx=${runtime.ctx}: the NPU usually runs out of memory above a few ` +
+          "thousand tokens. Lower runtime.ctx (1024-2048) if the server fails to start.",
+      );
+    }
+  }
+
+  return env;
+}
+
 export class LlamaServer {
   private readonly config: Config;
   private child: ChildProcess | null = null;
@@ -77,6 +164,11 @@ export class LlamaServer {
 
   get endpoint(): string {
     return baseUrl(this.config);
+  }
+
+  /** Which llama.cpp build this instance drives. */
+  get backend(): Config["runtime"]["backend"] {
+    return this.config.runtime.backend;
   }
 
   /** Exposed through gemma_status: did we start the process ourselves? */
@@ -126,38 +218,6 @@ export class LlamaServer {
     }
   }
 
-  private buildArgs(): string[] {
-    const { server, model, runtime } = this.config;
-    const args = [
-      "--host",
-      server.host,
-      "--port",
-      String(server.port),
-      "--alias",
-      model.alias,
-      "-c",
-      String(runtime.ctx),
-      "-ngl",
-      String(runtime.ngl),
-      "-np",
-      String(server.parallel),
-      "-fa",
-      runtime.flashAttn,
-      // Chat template support, required for structured output and tool calls
-      "--jinja",
-    ];
-
-    if (model.path !== "") args.push("-m", model.path);
-    else args.push("-hf", model.hf);
-
-    if (model.mmproj !== "") args.push("--mmproj", model.mmproj);
-    if (!server.webui) args.push("--no-webui");
-    if (server.apiKey !== "") args.push("--api-key", server.apiKey);
-
-    args.push(...runtime.extraArgs);
-    return args;
-  }
-
   private installExitHandlers(): void {
     if (this.exitHandlersInstalled) return;
     this.exitHandlersInstalled = true;
@@ -189,10 +249,11 @@ export class LlamaServer {
     const { server, model } = this.config;
 
     if (!existsSync(server.binary)) {
-      throw new LlamaError(
-        `llama-server not found at ${server.binary}\n` +
-          "Run scripts/fetch-runtime.ps1 to download the runtime.",
-      );
+      const hint =
+        this.config.runtime.backend === "openvino"
+          ? "Run scripts/fetch-runtime.ps1 -Backend openvino to download the OpenVINO runtime."
+          : "Run scripts/fetch-runtime.ps1 to download the runtime.";
+      throw new LlamaError(`llama-server not found at ${server.binary}\n${hint}`);
     }
     if (model.path !== "" && !existsSync(model.path)) {
       throw new LlamaError(`Configured GGUF not found: ${model.path}`);
@@ -200,19 +261,18 @@ export class LlamaServer {
 
     mkdirSync(paths.modelsDir, { recursive: true });
     mkdirSync(paths.logsDir, { recursive: true });
+    if (this.config.runtime.backend === "openvino" && this.config.openvino.cache) {
+      mkdirSync(paths.openvinoCacheDir, { recursive: true });
+    }
 
-    const args = this.buildArgs();
-    log.info("Starting llama-server", { binary: server.binary, args });
+    const args = buildServerArgs(this.config);
+    log.info("Starting llama-server", { backend: this.config.runtime.backend, binary: server.binary, args });
 
     const child = spawn(server.binary, args, {
       cwd: paths.runtimeDir,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        // Pin GGUF storage inside the app folder so the whole thing stays portable
-        LLAMA_CACHE: paths.modelsDir,
-      },
+      env: buildServerEnv(this.config),
     });
 
     this.child = child;

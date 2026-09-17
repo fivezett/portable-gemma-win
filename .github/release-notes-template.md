@@ -7,6 +7,8 @@
 | `gemma-mcp.exe` | The MCP server on its own |
 | `SHA256SUMS.txt` | Checksums |
 
+{{OPENVINO}}
+
 ## Setup
 
 ```powershell
@@ -23,6 +25,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\fetch-runtime.ps1
 
 The model downloads on the first tool call. To fetch it ahead of time, run
 `scripts\fetch-model.ps1`.
+
+On Intel hardware, fetch the OpenVINO runtime instead and switch the backend:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\fetch-runtime.ps1 -Backend openvino
+```
 
 See [docs/SETUP.md](https://github.com/{{REPOSITORY}}/blob/{{TAG}}/docs/SETUP.md) for
 requirements and configuration, and

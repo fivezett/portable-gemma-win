@@ -228,6 +228,22 @@ export function registerTools(server: McpServer, llama: LlamaServer, config: Con
     },
     async (args, ctx) => {
       try {
+        if (config.runtime.backend === "openvino") {
+          // Multimodal support in the OpenVINO backend is still a work in progress upstream,
+          // so fail with the reason rather than with a confusing decode error.
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  "The OpenVINO backend does not support image input yet (multimodal is a work in " +
+                  "progress upstream). Switch runtime.backend to cuda for vision, or use the text tools.",
+              },
+            ],
+            isError: true,
+          };
+        }
+
         let dataUrl: string;
         if (args.image_path) {
           const bytes = readFileSync(args.image_path);
@@ -267,6 +283,8 @@ export function registerTools(server: McpServer, llama: LlamaServer, config: Con
     running: z.boolean().describe("Whether llama-server is answering"),
     managed: z.boolean().describe("Whether this MCP server started that process"),
     endpoint: z.string(),
+    backend: z.enum(["cuda", "openvino"]).describe("Which llama.cpp build is in use"),
+    device: z.string().describe("Compute device: 'GPU (CUDA)' or the OpenVINO device name"),
     model: z.string().nullable(),
     context_size: z.number().nullable(),
     configured_model: z.string().describe("Configured model: local path or Hugging Face spec"),
@@ -278,8 +296,8 @@ export function registerTools(server: McpServer, llama: LlamaServer, config: Con
     {
       title: "Check Gemma's status",
       description:
-        "Report whether llama-server is running, which model is loaded and how large the context is. " +
-        "Use it to diagnose failing generations.",
+        "Report whether llama-server is running, which backend and device it uses, which model is " +
+        "loaded and how large the context is. Use it to diagnose failing generations.",
       inputSchema: z.object({}),
       outputSchema: statusOutput,
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -291,6 +309,8 @@ export function registerTools(server: McpServer, llama: LlamaServer, config: Con
         running,
         managed: llama.managed,
         endpoint: llama.endpoint,
+        backend: config.runtime.backend,
+        device: config.runtime.backend === "openvino" ? config.openvino.device : "GPU (CUDA)",
         model: props?.model ?? null,
         context_size: props?.contextSize ?? null,
         configured_model: config.model.path !== "" ? config.model.path : config.model.hf,
