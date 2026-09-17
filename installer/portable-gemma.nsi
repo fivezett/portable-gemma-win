@@ -29,13 +29,14 @@ ShowUnInstDetails show
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
+!include "Sections.nsh"
 
 !define MUI_ABORTWARNING
 !define MUI_ICON "${NSISDIR}\Contrib\Graphics\Icons\modern-install.ico"
 !define MUI_UNICON "${NSISDIR}\Contrib\Graphics\Icons\modern-uninstall.ico"
 
 !define MUI_WELCOMEPAGE_TITLE "${APPNAME} Setup"
-!define MUI_WELCOMEPAGE_TEXT "Sets up Gemma 4 running locally through llama.cpp on CUDA, served over MCP.$\r$\n$\r$\nNo administrator rights are needed, and the only registry keys written are the uninstall entries.$\r$\n$\r$\nRequirements:$\r$\n  - An NVIDIA graphics driver (no CUDA Toolkit)$\r$\n  - Internet access to download the model (several GB)"
+!define MUI_WELCOMEPAGE_TEXT "Sets up Gemma 4 running locally through llama.cpp, served over MCP.$\r$\n$\r$\nThe next page picks the inference runtime: CUDA for NVIDIA cards, or OpenVINO for Intel CPUs, integrated and Arc GPUs, and NPUs. Your hardware decides which one is preselected.$\r$\n$\r$\nNo administrator rights are needed, and the only registry keys written are the uninstall entries.$\r$\n$\r$\nRequirements:$\r$\n  - A graphics driver (no CUDA Toolkit, no OpenVINO install)$\r$\n  - Internet access to download the runtime and the model"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_COMPONENTS
@@ -57,10 +58,8 @@ ShowUnInstDetails show
 !insertmacro MUI_LANGUAGE "English"
 
 Var PowerShell
-
-Function .onInit
-  StrCpy $PowerShell "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
-FunctionEnd
+; Index of the selected runtime section, for the radio-button behaviour below.
+Var RuntimeChoice
 
 Section "Core (required)" SEC_CORE
   SectionIn RO
@@ -109,14 +108,66 @@ Section "Core (required)" SEC_CORE
   WriteUninstaller "$INSTDIR\uninstall.exe"
 SectionEnd
 
-Section "Download the llama.cpp runtime (~300 MB)" SEC_RUNTIME
-  DetailPrint "Downloading the llama.cpp Windows binaries..."
-  nsExec::ExecToLog '"$PowerShell" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\scripts\fetch-runtime.ps1"'
+SectionGroup /e "Inference runtime" SECGRP_RUNTIME
+
+  Section "NVIDIA - CUDA (~300 MB)" SEC_CUDA
+    DetailPrint "Downloading the llama.cpp CUDA build..."
+    nsExec::ExecToLog '"$PowerShell" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\scripts\fetch-runtime.ps1"'
+    Pop $0
+    ${If} $0 != 0
+      DetailPrint "Runtime download failed. Run scripts\fetch-runtime.ps1 by hand after installation."
+    ${Else}
+      ; Point the configuration at what was just installed, so nothing else is needed.
+      nsExec::ExecToLog '"$INSTDIR\gemma-mcp.exe" set-backend cuda'
+      Pop $0
+    ${EndIf}
+  SectionEnd
+
+  Section /o "Intel - OpenVINO (~75 MB)" SEC_OPENVINO
+    DetailPrint "Downloading the llama.cpp OpenVINO build..."
+    nsExec::ExecToLog '"$PowerShell" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\scripts\fetch-runtime.ps1" -Backend openvino'
+    Pop $0
+    ${If} $0 != 0
+      DetailPrint "Runtime download failed. Run scripts\fetch-runtime.ps1 -Backend openvino by hand after installation."
+    ${Else}
+      nsExec::ExecToLog '"$INSTDIR\gemma-mcp.exe" set-backend openvino'
+      Pop $0
+    ${EndIf}
+  SectionEnd
+
+  Section /o "Skip - install a runtime later" SEC_NO_RUNTIME
+    DetailPrint "No runtime installed. Run scripts\fetch-runtime.ps1 when you are ready."
+  SectionEnd
+
+SectionGroupEnd
+
+Function .onInit
+  StrCpy $PowerShell "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
+
+  ; Preselect by hardware: an NVIDIA driver answers nvidia-smi, and anything else is
+  ; better served by OpenVINO, which also runs on plain CPUs.
+  nsExec::ExecToStack 'nvidia-smi --query-gpu=name --format=csv,noheader'
   Pop $0
-  ${If} $0 != 0
-    DetailPrint "Runtime download failed. Run scripts\fetch-runtime.ps1 by hand after installation."
+  ${If} $0 == 0
+    StrCpy $RuntimeChoice ${SEC_CUDA}
+    !insertmacro SelectSection ${SEC_CUDA}
+    !insertmacro UnselectSection ${SEC_OPENVINO}
+  ${Else}
+    StrCpy $RuntimeChoice ${SEC_OPENVINO}
+    !insertmacro UnselectSection ${SEC_CUDA}
+    !insertmacro SelectSection ${SEC_OPENVINO}
   ${EndIf}
-SectionEnd
+FunctionEnd
+
+; Exactly one runtime at a time. Skip is a real option: the runtime can be fetched later
+; with scripts\fetch-runtime.ps1.
+Function .onSelChange
+  !insertmacro StartRadioButtons $RuntimeChoice
+    !insertmacro RadioButton ${SEC_CUDA}
+    !insertmacro RadioButton ${SEC_OPENVINO}
+    !insertmacro RadioButton ${SEC_NO_RUNTIME}
+  !insertmacro EndRadioButtons
+FunctionEnd
 
 Section /o "Download the Gemma model (several GB)" SEC_MODEL
   DetailPrint "Downloading the Gemma GGUF. On a slow line this takes tens of minutes..."
@@ -137,8 +188,11 @@ SectionEnd
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SEC_CORE} "The gemma-mcp.exe server, scripts, configuration template and documentation."
-  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_RUNTIME} "Downloads the llama.cpp Windows CUDA build and the CUDA runtime DLLs from GitHub, picking CUDA 13 or 12 based on the GPU."
-  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_MODEL} "Downloads the Gemma 4 GGUF into models\. Leave it off and the model is fetched on the first tool call instead."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SECGRP_RUNTIME} "Which llama.cpp build to install. Pick the one matching your hardware; the selection is written to config\gemma.toml."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_CUDA} "For NVIDIA cards. Downloads the official llama.cpp Windows CUDA build with its runtime DLLs, choosing CUDA 13 or 12 from the GPU's compute capability. Needs Turing (GTX 1600 / RTX 2000) or newer for CUDA 13."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_OPENVINO} "For Intel CPUs, integrated and Arc GPUs, and NPUs. Downloads the OpenVINO build produced by this project, since upstream ships none for Windows."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_NO_RUNTIME} "Installs no runtime. Use scripts\fetch-runtime.ps1 later, then gemma-mcp.exe set-backend."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_MODEL} "Downloads the Gemma 4 GGUF into models\, using the quantisation that suits the chosen runtime. Leave it off and the model is fetched on the first tool call instead."
   !insertmacro MUI_DESCRIPTION_TEXT ${SEC_SHORTCUT} "Creates shortcuts in the Start menu."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 

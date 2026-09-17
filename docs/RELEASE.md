@@ -21,8 +21,8 @@ Three jobs in sequence.
    executable** via `GEMMA_MCP_BIN`, and the reported version is compared with
    `package.json`.
 3. **package** (ubuntu) — downloads the executable and runs `scripts/build.ts --package-only`,
-   the same script developers use, producing the portable archive, the NSIS installer and
-   `SHA256SUMS.txt`.
+   the same script developers use, producing the portable archive and the
+   NSIS installer.
 
 Step 2's smoke test matters: compiling bundles everything into one module graph and changes
 evaluation order, which can break code that works perfectly from source. Only running the
@@ -75,7 +75,9 @@ Assets attached to the release:
 - `portable-gemma-win-x64-<version>.zip`
 - `gemma-mcp.exe`
 - `llama-openvino-<llamacpp-tag>-win-x64.zip` (when the OpenVINO build succeeded)
-- `SHA256SUMS.txt`
+
+No checksum file is shipped: GitHub already exposes a SHA-256 digest per asset through the
+releases API, and a checksums file served from the same place adds nothing.
 
 The OpenVINO job is allowed to fail without holding back the release: `publish` only
 requires `build`, and the notes state whether the OpenVINO asset made it in.

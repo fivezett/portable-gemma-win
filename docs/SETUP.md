@@ -33,11 +33,13 @@ models on Intel CPUs, integrated and Arc GPUs, and NPUs.
 
 ```powershell
 .\scripts\fetch-runtime.ps1 -Backend openvino
+.\gemma-mcp.exe set-backend openvino
 ```
 
-Then set `backend = "openvino"` under `[runtime]` in `config\gemma.toml`. The two runtimes
-live in different folders and can be installed side by side. Details, device selection and
-the backend's limitations are in [OPENVINO.md](OPENVINO.md).
+The installer asks the same question on its components page and preselects an answer from
+the hardware it finds. The two runtimes live in different folders and can be installed side
+by side. Details, device selection and the backend's limitations are in
+[OPENVINO.md](OPENVINO.md).
 
 ## 2. Choosing a model
 

@@ -1,6 +1,7 @@
 import pkg from "../package.json" with { type: "json" };
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
+import { type Backend, setBackend } from "./backend-config.ts";
 import { type Config, loadConfig } from "./config.ts";
 import { doctor } from "./doctor.ts";
 import { LlamaServer } from "./llama.ts";
@@ -20,6 +21,7 @@ function usage(): string {
     "  gemma-mcp doctor          Diagnose GPU, runtime, model and config",
     "  gemma-mcp serve           Start llama-server only and stay resident",
     "  gemma-mcp print-config    Print MCP client configuration as JSON",
+    "  gemma-mcp set-backend <b> Select the runtime: cuda (NVIDIA) or openvino (Intel)",
     "  gemma-mcp --version       Print the version",
     "",
     "Options:",
@@ -87,6 +89,22 @@ async function main(): Promise<void> {
 
   if (command === "print-config") {
     printClientConfig();
+    return;
+  }
+  if (command === "set-backend") {
+    const requested = positional[1];
+    if (requested !== "cuda" && requested !== "openvino") {
+      process.stderr.write(`Usage: gemma-mcp set-backend <cuda|openvino>\n`);
+      process.exitCode = 2;
+      return;
+    }
+    const change = setBackend(requested as Backend);
+    process.stdout.write(
+      `backend = "${change.backend}" in ${change.configFile}${change.created ? " (created)" : ""}\n`,
+    );
+    if (change.modelHf) {
+      process.stdout.write(`model.hf = "${change.modelHf}" (default for this backend)\n`);
+    }
     return;
   }
   if (command === "doctor") {

@@ -141,6 +141,5 @@ jobs:
             dist/gemma-mcp.exe
             dist/portable-gemma-win-x64-*.zip
             dist/portable-gemma-setup-*.exe
-            dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 7

@@ -119,15 +119,6 @@ async function installer(): Promise<void> {
   await $`makensis -V2 -DSTAGING=${staging} -DVERSION=${version} ${join(root, "installer", "portable-gemma.nsi")}`;
 }
 
-async function checksums(): Promise<void> {
-  if (!(await hasCommand("sha256sum"))) return;
-  step("Writing checksums");
-  const names = (await readdir(dist)).filter((name) => name !== "SHA256SUMS.txt").sort();
-  const sums = await $`sha256sum ${names}`.cwd(dist).text();
-  await Bun.write(join(dist, "SHA256SUMS.txt"), sums);
-  console.log(sums.trimEnd());
-}
-
 console.log(`==> portable-gemma-win ${version}`);
 
 if (packageOnly) {
@@ -142,7 +133,6 @@ if (packageOnly) {
 await stage();
 await archive();
 await installer();
-await checksums();
 
 console.log("\nDone:");
 for (const name of (await readdir(dist)).sort()) {

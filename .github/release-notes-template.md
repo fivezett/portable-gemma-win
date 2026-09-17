@@ -5,7 +5,6 @@
 | `portable-gemma-setup-{{VERSION}}.exe` | Installer. No administrator rights; installs into `%LOCALAPPDATA%` |
 | `portable-gemma-win-x64-{{VERSION}}.zip` | Portable folder. Extract anywhere, including a USB stick |
 | `gemma-mcp.exe` | The MCP server on its own |
-| `SHA256SUMS.txt` | Checksums |
 
 {{OPENVINO}}
 
@@ -37,10 +36,16 @@ requirements and configuration, and
 [docs/MCP.md](https://github.com/{{REPOSITORY}}/blob/{{TAG}}/docs/MCP.md) for registering
 the server with an MCP client.
 
-### Checksums
+### Verifying a download
 
+GitHub publishes a SHA-256 digest for every asset above. Compare it with the file you got:
+
+```powershell
+(Get-FileHash .\portable-gemma-setup-{{VERSION}}.exe -Algorithm SHA256).Hash
 ```
-{{CHECKSUMS}}
+
+```bash
+gh api repos/{{REPOSITORY}}/releases/tags/{{TAG}} --jq '.assets[] | "\(.digest)  \(.name)"'
 ```
 
 ---

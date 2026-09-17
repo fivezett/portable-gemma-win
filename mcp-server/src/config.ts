@@ -72,6 +72,16 @@ export type Config = {
   };
 };
 
+/**
+ * Per-backend defaults. The CUDA and OpenVINO paths want different quantisations:
+ * upstream validated the OpenVINO backend against plain Q4_K_M builds, while the
+ * CUDA path does better on Unsloth's dynamic quants.
+ */
+export const backendDefaults = {
+  cuda: { modelHf: "unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL" },
+  openvino: { modelHf: "bartowski/google_gemma-4-E4B-it-GGUF:Q4_K_M" },
+} as const;
+
 const defaults: Config = {
   server: {
     host: "127.0.0.1",
@@ -83,7 +93,7 @@ const defaults: Config = {
     parallel: 1,
   },
   model: {
-    hf: "unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL",
+    hf: backendDefaults.cuda.modelHf,
     path: "",
     mmproj: "",
     alias: "gemma",
