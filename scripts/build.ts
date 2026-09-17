@@ -94,7 +94,7 @@ async function stage(): Promise<void> {
     await $`cp ${join(root, "scripts", name)} ${join(staging, "scripts")}/`;
   }
   // RELEASE.md targets contributors, not users of the distributed folder.
-  for (const name of ["SETUP.md", "MCP.md", "SPEC.md"]) {
+  for (const name of ["SETUP.md", "MCP.md", "OPENVINO.md", "SPEC.md"]) {
     await $`cp ${join(root, "docs", name)} ${join(staging, "docs")}/`;
   }
   await $`cp ${join(root, "config", "gemma.toml.example")} ${join(staging, "config")}/`;

@@ -6,6 +6,7 @@
 |---|---|
 | `.github/workflows/build.yml` | Reusable: check, build the executable, package |
 | `.github/workflows/ci.yml` | Calls `build.yml` on pushes and pull requests |
+| `.github/workflows/openvino-runtime.yml` | Builds llama.cpp with the OpenVINO backend |
 | `.github/workflows/release.yml` | Tags and publishes a GitHub Release |
 
 ### build.yml (reusable)
@@ -29,6 +30,25 @@ artifact catches it.
 
 The Bun version is pinned once, by `packageManager` in `mcp-server/package.json`; the
 workflows read it through `bun-version-file`.
+
+### openvino-runtime.yml
+
+Upstream ships no prebuilt Windows binaries for the OpenVINO backend, so it is compiled
+here: check out llama.cpp at the pinned tag, download the pinned OpenVINO toolkit, install
+OpenCL through vcpkg, then configure with `-DGGML_OPENVINO=ON` and build. Both the toolkit
+and the vcpkg tree are cached.
+
+`scripts/ci/package-openvino.ts` then collects the binaries, the OpenVINO runtime DLLs,
+`plugins.xml`, TBB and the upstream licences into
+`llama-openvino-<llamacpp-tag>-win-x64.zip`, along with a `runtime-version.json` recording
+what it was built from.
+
+Versions are pinned in `openvino/build-config.json`. The build takes tens of minutes, so it
+is not part of the ordinary CI run; the release workflow calls it, and it can also be
+triggered by hand.
+
+The runtime cannot be exercised on a GitHub runner — there is no Intel GPU or NPU there —
+so the job only confirms the binary starts. Everything past that needs real hardware.
 
 ### release.yml
 
@@ -54,7 +74,18 @@ Assets attached to the release:
 - `portable-gemma-setup-<version>.exe`
 - `portable-gemma-win-x64-<version>.zip`
 - `gemma-mcp.exe`
+- `llama-openvino-<llamacpp-tag>-win-x64.zip` (when the OpenVINO build succeeded)
 - `SHA256SUMS.txt`
+
+The OpenVINO job is allowed to fail without holding back the release: `publish` only
+requires `build`, and the notes state whether the OpenVINO asset made it in.
+
+To preview the notes and the asset list without publishing anything:
+
+```bash
+DRY_RUN=1 TAG=v0.2.0 VERSION=0.2.0 GITHUB_REPOSITORY=<owner>/<repo> \
+  bun run scripts/ci/publish-release.ts
+```
 
 ## Cutting a release
 

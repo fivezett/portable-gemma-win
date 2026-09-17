@@ -28,11 +28,30 @@ export type Config = {
     alias: string;
   };
   runtime: {
+    /**
+     * Which llama.cpp build to drive.
+     *   cuda     - NVIDIA, the official prebuilt Windows binaries
+     *   openvino - Intel CPU / GPU / NPU, built from source by this project's CI
+     */
+    backend: "cuda" | "openvino";
     ctx: number;
     ngl: number;
     flashAttn: "on" | "off" | "auto";
     /** Extra arguments forwarded to llama-server verbatim */
     extraArgs: string[];
+  };
+  openvino: {
+    /** CPU, GPU, NPU, or an indexed device such as GPU.1 */
+    device: string;
+    /**
+     * Stateful KV cache. Faster where it works, but Gemma 4 fails with it on CPU and GPU,
+     * so it is off by default. It also limits llama-server to a single chat session.
+     */
+    stateful: boolean;
+    /** Cache compiled models under cache/openvino. Ignored on NPU, which cannot use it. */
+    cache: boolean;
+    /** Token chunk size for NPU prefill; ignored on CPU and GPU */
+    npuPrefillChunk: number;
   };
   sampling: {
     temperature: number;
@@ -70,10 +89,19 @@ const defaults: Config = {
     alias: "gemma",
   },
   runtime: {
+    backend: "cuda",
     ctx: 16384,
     ngl: 99,
     flashAttn: "on",
     extraArgs: [],
+  },
+  openvino: {
+    // CPU always works. GPU and NPU are faster on Core Ultra but fail outright when absent,
+    // so the safe device is the default and doctor points at the better one.
+    device: "CPU",
+    stateful: false,
+    cache: true,
+    npuPrefillChunk: 256,
   },
   sampling: {
     temperature: 1.0,
@@ -190,18 +218,21 @@ export function loadConfig(file: string = paths.configFile): Config {
   const s = section(raw, "server");
   const m = section(raw, "model");
   const r = section(raw, "runtime");
+  const o = section(raw, "openvino");
   const p = section(raw, "sampling");
   const t = section(raw, "timeouts");
   const l = section(raw, "log");
 
+  const backend = oneOf(env.GEMMA_BACKEND ?? r.backend, ["cuda", "openvino"] as const, defaults.runtime.backend);
   const binary = str(env.GEMMA_SERVER_BIN ?? s.binary, defaults.server.binary);
+  const defaultRuntimeDir = backend === "openvino" ? paths.openvinoRuntimeDir : paths.runtimeDir;
 
   return {
     server: {
       host: str(env.GEMMA_HOST ?? s.host, defaults.server.host),
       port: num(env.GEMMA_PORT ?? s.port, defaults.server.port),
       autostart: bool(env.GEMMA_AUTOSTART ?? s.autostart, defaults.server.autostart),
-      binary: binary === "" ? join(paths.runtimeDir, serverBinaryName()) : resolveFromRoot(binary),
+      binary: binary === "" ? join(defaultRuntimeDir, serverBinaryName()) : resolveFromRoot(binary),
       webui: bool(env.GEMMA_WEBUI ?? s.webui, defaults.server.webui),
       apiKey: str(env.GEMMA_API_KEY ?? s.api_key, defaults.server.apiKey),
       parallel: num(env.GEMMA_PARALLEL ?? s.parallel, defaults.server.parallel),
@@ -213,10 +244,17 @@ export function loadConfig(file: string = paths.configFile): Config {
       alias: str(env.GEMMA_ALIAS ?? m.alias, defaults.model.alias),
     },
     runtime: {
+      backend,
       ctx: num(env.GEMMA_CTX ?? r.ctx, defaults.runtime.ctx),
       ngl: num(env.GEMMA_NGL ?? r.ngl, defaults.runtime.ngl),
       flashAttn: oneOf(env.GEMMA_FLASH_ATTN ?? r.flash_attn, ["on", "off", "auto"] as const, defaults.runtime.flashAttn),
       extraArgs: splitArgs(env.GEMMA_EXTRA_ARGS ?? r.extra_args),
+    },
+    openvino: {
+      device: str(env.GEMMA_OPENVINO_DEVICE ?? o.device, defaults.openvino.device).toUpperCase(),
+      stateful: bool(env.GEMMA_OPENVINO_STATEFUL ?? o.stateful, defaults.openvino.stateful),
+      cache: bool(env.GEMMA_OPENVINO_CACHE ?? o.cache, defaults.openvino.cache),
+      npuPrefillChunk: num(env.GEMMA_OPENVINO_NPU_PREFILL_CHUNK ?? o.npu_prefill_chunk, defaults.openvino.npuPrefillChunk),
     },
     sampling: {
       temperature: num(env.GEMMA_TEMPERATURE ?? p.temperature, defaults.sampling.temperature),

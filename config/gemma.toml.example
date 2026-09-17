@@ -30,6 +30,11 @@ mmproj = ""
 alias = "gemma"
 
 [runtime]
+# Which llama.cpp build to drive.
+#   cuda     - NVIDIA. The official prebuilt Windows binaries (runtime/llama).
+#   openvino - Intel CPU / GPU / NPU. Built from source by this project's CI
+#              (runtime/llama-openvino). See docs/OPENVINO.md.
+backend = "cuda"
 # Context length. Longer contexts grow the KV cache, which is VRAM you no longer have
 # for weights. 16384 is a comfortable ceiling for E4B on 8 GB.
 ctx = 16384
@@ -39,6 +44,22 @@ ngl = 99
 flash_attn = "on"
 # Extra arguments forwarded to llama-server verbatim; quoting is supported
 extra_args = ""
+
+[openvino]
+# Only read when runtime.backend = "openvino".
+#
+# Target device: CPU, GPU or NPU. Index a specific card with GPU.0 / GPU.1.
+# CPU is the default because it always works; on a Core Ultra part, GPU is usually
+# what you want. Run `gemma-mcp.exe doctor` to see what the machine offers.
+device = "CPU"
+# Stateful KV cache. Faster where it works, but Gemma 4 is reported as failing with it
+# on both CPU and GPU, and it limits llama-server to a single chat session.
+stateful = false
+# Cache compiled models under cache/openvino. Turns a minutes-long graph compile into a
+# blob load on later starts. Ignored on NPU, which does not support caching.
+cache = true
+# Token chunk size for NPU prefill. Ignored on CPU and GPU.
+npu_prefill_chunk = 256
 
 [sampling]
 # Values recommended for the Gemma family

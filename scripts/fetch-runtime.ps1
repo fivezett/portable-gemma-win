@@ -1,13 +1,22 @@
 <#
 .SYNOPSIS
-    Download the llama.cpp Windows CUDA build plus the CUDA runtime DLLs into runtime/llama.
+    Download a llama.cpp runtime into runtime\, either the CUDA build or the OpenVINO build.
 
 .DESCRIPTION
-    No CUDA Toolkit needed. The official releases ship cudart alongside the binaries, so an
-    NVIDIA graphics driver is the only prerequisite.
+    CUDA (default): takes the official llama.cpp Windows release. No CUDA Toolkit needed,
+    because those releases ship cudart alongside the binaries; an NVIDIA graphics driver is
+    the only prerequisite. The GPU's compute capability decides which build to take, since
+    CUDA 13 dropped support for anything below 7.5 (Pascal and older).
 
-    The GPU's compute capability decides which build to take. CUDA 13 dropped support for
-    anything below 7.5 (Pascal and older), so those cards fall back to a CUDA 12 build.
+    OpenVINO: runs on Intel CPUs, integrated and discrete GPUs, and NPUs. Upstream ships no
+    prebuilt Windows binaries for this backend, so the build is produced by this project's
+    own CI and attached to its releases. This script downloads that asset.
+
+.PARAMETER Backend
+    cuda (default) or openvino.
+
+.PARAMETER Repo
+    OpenVINO only: the GitHub repository holding the runtime asset.
 
 .PARAMETER Cuda
     CUDA version to use: "auto" (default), "13", "12", or an exact "13.4".
@@ -25,9 +34,13 @@
     .\fetch-runtime.ps1
 .EXAMPLE
     .\fetch-runtime.ps1 -Cuda 12 -Force
+.EXAMPLE
+    .\fetch-runtime.ps1 -Backend openvino
 #>
 [CmdletBinding()]
 param(
+    [ValidateSet("cuda", "openvino")][string]$Backend = "cuda",
+    [string]$Repo = "fivezett/portable-gemma-win",
     [string]$Cuda = "auto",
     [string]$Tag = "",
     [ValidateSet("x64", "arm64")][string]$Arch = "x64",
@@ -39,8 +52,13 @@ $ProgressPreference = "SilentlyContinue"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $Root = Split-Path -Parent $PSScriptRoot
-$RuntimeDir = Join-Path $Root "runtime\llama"
+$RuntimeDir = if ($Backend -eq "openvino") {
+    Join-Path $Root "runtime\llama-openvino"
+} else {
+    Join-Path $Root "runtime\llama"
+}
 $ReleasesApi = "https://api.github.com/repos/ggml-org/llama.cpp/releases"
+$OwnReleasesApi = "https://api.github.com/repos/$Repo/releases"
 
 function Write-Step($message) { Write-Host "==> $message" -ForegroundColor Cyan }
 function Write-Note($message) { Write-Host "    $message" -ForegroundColor DarkGray }
@@ -138,12 +156,67 @@ function Save-And-Expand {
     Remove-Item $zip -Force
 }
 
+function Install-OpenvinoRuntime {
+    $headers = @{ "User-Agent" = "portable-gemma-win" }
+    if ($env:GITHUB_TOKEN) { $headers["Authorization"] = "Bearer $($env:GITHUB_TOKEN)" }
+
+    $uri = if ($Tag -ne "") { "$OwnReleasesApi/tags/$Tag" } else { "$OwnReleasesApi/latest" }
+    Write-Step "Looking for the OpenVINO runtime asset in $Repo"
+
+    try {
+        $release = Invoke-RestMethod -Uri $uri -Headers $headers
+    } catch {
+        throw "Could not read the releases of ${Repo}: $($_.Exception.Message)"
+    }
+
+    $asset = $release.assets | Where-Object { $_.name -match "^llama-openvino-.*win-$Arch\.zip$" } | Select-Object -First 1
+    if (-not $asset) {
+        throw @"
+Release $($release.tag_name) has no OpenVINO runtime asset for $Arch.
+The OpenVINO build is produced by the 'openvino-runtime' workflow; run it for this release,
+or pass -Tag to pick a release that already has the asset.
+"@
+    }
+
+    Write-Note "Release: $($release.tag_name) / $($asset.name)"
+    New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null
+
+    $temp = Join-Path ([IO.Path]::GetTempPath()) ("gemma-openvino-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $temp -Force | Out-Null
+    try {
+        Save-And-Expand -Asset $asset -Destination $RuntimeDir -TempDir $temp
+    } finally {
+        Remove-Item $temp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $serverExe = Join-Path $RuntimeDir "llama-server.exe"
+    if (-not (Test-Path $serverExe)) {
+        throw "llama-server.exe is still missing after extraction: $RuntimeDir"
+    }
+
+    Write-Host ""
+    Write-Host "Done." -ForegroundColor Green
+    Write-Host "  $serverExe"
+    Write-Host "  llama.cpp with the OpenVINO backend ($($release.tag_name))"
+    Write-Host ""
+    Write-Host "Set the backend in config\gemma.toml:" -ForegroundColor Cyan
+    Write-Host "  [runtime]"
+    Write-Host '  backend = "openvino"'
+    Write-Host "  [openvino]"
+    Write-Host '  device = "GPU"   # CPU / GPU / NPU'
+}
+
 # ---- main ----
 
 $serverExe = Join-Path $RuntimeDir "llama-server.exe"
 if ((Test-Path $serverExe) -and -not $Force) {
     Write-Host "Already installed: $serverExe" -ForegroundColor Green
     Write-Host "Pass -Force to download it again."
+    exit 0
+}
+
+if ($Backend -eq "openvino") {
+    Install-OpenvinoRuntime
     exit 0
 }
 

@@ -61,10 +61,18 @@ jobs:
     if: needs.detect.outputs.should_release == 'true'
     uses: ./.github/workflows/build.yml
 
+  # Compiled from source and slow. A failure here must not hold back the release, so
+  # publish only requires `build`; the release notes say whether this asset made it.
+  openvino:
+    name: OpenVINO runtime
+    needs: detect
+    if: needs.detect.outputs.should_release == 'true'
+    uses: ./.github/workflows/openvino-runtime.yml
+
   publish:
     name: Publish
-    needs: [detect, build]
-    if: needs.detect.outputs.should_release == 'true'
+    needs: [detect, build, openvino]
+    if: always() && needs.detect.outputs.should_release == 'true' && needs.build.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -93,6 +101,14 @@ jobs:
           name: portable-gemma-win
           path: dist
 
+      # Absent when the OpenVINO build failed; the release still goes out without it.
+      - name: Download the OpenVINO runtime
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: openvino-runtime
+          path: dist
+
       - name: Tag and publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -101,4 +117,5 @@ jobs:
           PREVIOUS_TAG: ${{ needs.detect.outputs.previous_tag }}
           NEEDS_TAG: ${{ needs.detect.outputs.needs_tag }}
           PRERELEASE: ${{ needs.detect.outputs.prerelease }}
+          OPENVINO_RESULT: ${{ needs.openvino.result }}
         run: bun run scripts/ci/publish-release.ts

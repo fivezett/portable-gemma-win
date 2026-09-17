@@ -26,6 +26,19 @@ To be explicit about it:
 
 What was installed is recorded in `runtime\llama\runtime-version.json`.
 
+### Intel hardware
+
+On a machine without an NVIDIA GPU, use the OpenVINO build instead. It runs the same GGUF
+models on Intel CPUs, integrated and Arc GPUs, and NPUs.
+
+```powershell
+.\scripts\fetch-runtime.ps1 -Backend openvino
+```
+
+Then set `backend = "openvino"` under `[runtime]` in `config\gemma.toml`. The two runtimes
+live in different folders and can be installed side by side. Details, device selection and
+the backend's limitations are in [OPENVINO.md](OPENVINO.md).
+
 ## 2. Choosing a model
 
 Gemma 4 comes as E2B, E4B, 12B, 26B-A4B (mixture of experts) and 31B. Rough figures for
@@ -91,7 +104,8 @@ The settings worth revisiting:
 
 | Setting | Meaning | When to change it |
 |---|---|---|
-| `runtime.ctx` | Context length | Lower it when VRAM runs short |
+| `runtime.backend` | `cuda` or `openvino` | Pick the one matching the hardware |
+| `runtime.ctx` | Context length | Lower it when VRAM runs short; 1024-2048 on an NPU |
 | `runtime.ngl` | Layers on the GPU | 99 means all; lower it to spill onto the CPU |
 | `sampling.max_tokens` | Per-call generation cap | Raise it if long answers get cut off |
 | `timeouts.startup_ms` | Startup budget | Raise it if the first download does not finish in time |

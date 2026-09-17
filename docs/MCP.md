@@ -124,6 +124,9 @@ output outside the schema cannot be produced. `temperature` defaults to 0.
 Ask about an image. Needs either `image_path` or `image_base64`, and a multimodal
 projector (mmproj) has to be loaded.
 
+Only available on the CUDA backend. With `backend = "openvino"` this returns an error
+saying so, because multimodal support is still a work in progress upstream.
+
 | Argument | Type | Notes |
 |---|---|---|
 | `prompt` | string (required) | The question about the image |
@@ -135,8 +138,8 @@ projector (mmproj) has to be loaded.
 
 Structured status, for working out why generation is failing.
 
-Returns `running`, `managed`, `endpoint`, `model`, `context_size`, `configured_model` and
-`autostart`.
+Returns `running`, `managed`, `endpoint`, `backend` (`cuda` or `openvino`), `device`,
+`model`, `context_size`, `configured_model` and `autostart`.
 
 ## Long generations
 

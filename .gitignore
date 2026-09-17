@@ -10,3 +10,7 @@
 
 node_modules/
 *.log
+
+# Working directories for the OpenVINO runtime build (CI creates these)
+/llama.cpp/
+/openvino_toolkit/
