@@ -4,7 +4,7 @@
  *
  * Collects, into one flat folder that mirrors how the CUDA releases are laid out:
  *   - llama.cpp binaries built with -DGGML_OPENVINO=ON
- *   - the OpenVINO runtime DLLs, their plugins.xml, and TBB
+ *   - the OpenVINO runtime DLLs, the device plugins, and TBB
  *   - upstream licences, since this archive redistributes both projects
  *   - runtime-version.json, recording what it was built from
  *
@@ -95,18 +95,27 @@ if (ovDlls === 0) fail(`No OpenVINO DLLs found in ${ovBin}`);
 
 await copyGlob(join(openvinoRoot, "runtime", "3rdparty", "tbb", "bin"), "*.dll", "TBB");
 
-// Without plugins.xml the runtime cannot resolve the CPU, GPU or NPU plugins, and it is a
-// required file for local distribution. Its location has moved between packages, so search
-// the tree instead of assuming one.
+// Older OpenVINO packages shipped plugins.xml next to the DLLs and the runtime needed it
+// to find the device plugins. Current packages (2026.3.1 among them) register plugins in
+// the core library and ship no such file, which is also why upstream's own Dockerfile
+// never copies one. Take it when it is there, and do not insist when it is not.
 const pluginsXml = await findOne(join(openvinoRoot, "runtime"), "**/plugins.xml");
-if (!pluginsXml) {
-  console.error("Searched for plugins.xml under:", join(openvinoRoot, "runtime"));
-  console.error("Layout found there:");
-  for (const entry of await listTree(join(openvinoRoot, "runtime"), 3)) console.error(`  ${entry}`);
-  fail("plugins.xml not found anywhere under the OpenVINO runtime directory");
+if (pluginsXml) {
+  await copyFile(pluginsXml, join(staging, "plugins.xml"));
+  console.log(`    plugins.xml: from ${pluginsXml}`);
+} else {
+  console.log("    plugins.xml: not shipped by this package (plugins are registered in the core)");
 }
-await copyFile(pluginsXml, join(staging, "plugins.xml"));
-console.log(`    plugins.xml: from ${pluginsXml}`);
+
+// What actually has to be there: the device plugins themselves. Without these the runtime
+// has nothing to run on, and that failure would only show up on a user's machine.
+const plugins = (await readdir(staging)).filter((name) => /_plugin\.dll$/i.test(name));
+if (plugins.length === 0) {
+  console.error("Staged files:");
+  for (const entry of (await readdir(staging)).sort()) console.error(`  ${entry}`);
+  fail("No OpenVINO device plugin DLLs were staged (expected openvino_intel_*_plugin.dll)");
+}
+console.log(`    device plugins: ${plugins.join(", ")}`);
 
 console.log("==> Collecting licences");
 const licences: [string, string][] = [

@@ -110,12 +110,16 @@ async function openvinoChecks(config: Config): Promise<Check[]> {
         : "no openvino*.dll in runtime/llama-openvino -- run fetch-runtime.ps1 -Backend openvino",
   });
 
+  // The device plugins are what must be present. plugins.xml only appears in older
+  // OpenVINO packages; current ones register plugins inside the core library.
+  const plugins = dlls.filter((name) => /_plugin\.dll$/i.test(name));
   checks.push({
-    label: "OpenVINO plugins.xml",
-    ok: existsSync(join(dir, "plugins.xml")),
-    detail: existsSync(join(dir, "plugins.xml"))
-      ? join(dir, "plugins.xml")
-      : "missing; device plugins cannot be loaded without it",
+    label: "OpenVINO device plugins",
+    ok: plugins.length > 0,
+    detail:
+      plugins.length > 0
+        ? plugins.join(", ")
+        : "no openvino_intel_*_plugin.dll present; there is nothing to run inference on",
   });
 
   const device = config.openvino.device;

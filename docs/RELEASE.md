@@ -38,8 +38,8 @@ here: check out llama.cpp at the pinned tag, download the pinned OpenVINO toolki
 OpenCL through vcpkg, then configure with `-DGGML_OPENVINO=ON` and build. Both the toolkit
 and the vcpkg tree are cached.
 
-`scripts/ci/package-openvino.ts` then collects the binaries, the OpenVINO runtime DLLs,
-`plugins.xml`, TBB and the upstream licences into
+`scripts/ci/package-openvino.ts` then collects the binaries, the OpenVINO runtime DLLs and
+device plugins, TBB and the upstream licences into
 `llama-openvino-<llamacpp-tag>-win-x64.zip`, along with a `runtime-version.json` recording
 what it was built from.
 
