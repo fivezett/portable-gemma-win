@@ -1,3 +1,4 @@
+import pkg from "../package.json" with { type: "json" };
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { type Config, loadConfig } from "./config.ts";
@@ -6,7 +7,8 @@ import { LlamaServer } from "./llama.ts";
 import { configureLogger, log } from "./log.ts";
 import { paths } from "./paths.ts";
 
-const VERSION = "0.1.0";
+/** バージョンの実体は package.json。バンドル時に埋め込まれる */
+const VERSION: string = pkg.version;
 
 function usage(): string {
   return [

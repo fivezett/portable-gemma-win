@@ -105,6 +105,7 @@ PortableGemma/
 - [docs/SETUP.md](docs/SETUP.md) — セットアップ詳細、モデル選定、トラブルシューティング
 - [docs/MCP.md](docs/MCP.md) — MCP クライアントへの登録とツールの仕様
 - [docs/SPEC.md](docs/SPEC.md) — 設計と、そう決めた理由
+- [docs/RELEASE.md](docs/RELEASE.md) — CI / CD とリリース手順
 
 ## 開発
 
@@ -114,6 +115,14 @@ bun install
 bun test          # モックの llama-server に対する stdio 越しの結合テスト
 bun run check     # 型チェック (TypeScript 7)
 cd .. && ./scripts/build.sh   # exe / zip / インストーラを生成
+```
+
+リリースは `mcp-server/package.json` のバージョンを上げて `main` に push するだけで、
+タグの作成から GitHub Release の公開まで自動で走る。詳細は [docs/RELEASE.md](docs/RELEASE.md)。
+
+```bash
+./scripts/release.sh 0.2.0
+git push origin main
 ```
 
 ## ライセンス

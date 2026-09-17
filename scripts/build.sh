@@ -17,7 +17,12 @@ version="$(node -p "require('$root/mcp-server/package.json').version")"
 echo "==> portable-gemma-win $version をビルドします"
 
 echo "==> 依存関係"
-(cd "$root/mcp-server" && bun install --frozen-lockfile 2>/dev/null || bun install)
+(
+  cd "$root/mcp-server"
+  if ! bun install --frozen-lockfile >/dev/null 2>&1; then
+    bun install
+  fi
+)
 
 echo "==> 型チェック"
 (cd "$root/mcp-server" && bun run check)
@@ -36,7 +41,10 @@ cp "$dist/gemma-mcp.exe" "$staging/"
 cp "$root/README.md" "$staging/"
 mkdir -p "$staging/scripts" "$staging/docs" "$staging/config"
 cp "$root/scripts/fetch-runtime.ps1" "$root/scripts/fetch-model.ps1" "$root/scripts/start-llama-server.cmd" "$staging/scripts/"
-cp "$root/docs/"*.md "$staging/docs/"
+# RELEASE.md は開発者向けなので配布物には含めない
+for doc in SETUP MCP SPEC; do
+  cp "$root/docs/$doc.md" "$staging/docs/"
+done
 cp "$root/config/gemma.toml.example" "$staging/config/"
 
 echo "==> 持ち運び用 zip"

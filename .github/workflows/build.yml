@@ -1,11 +1,13 @@
+# 再利用可能ワークフロー。CI とリリースの両方から呼ばれる。
+# 成果物は artifacts として次のジョブに渡す。
 name: build
 
 on:
-  push:
-    branches: ["**"]
-    tags: ["v*"]
-  pull_request:
-  workflow_dispatch:
+  workflow_call:
+    outputs:
+      version:
+        description: "mcp-server/package.json のバージョン"
+        value: ${{ jobs.test.outputs.version }}
 
 permissions:
   contents: read
@@ -14,17 +16,27 @@ jobs:
   test:
     name: 型チェックとテスト
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
       - name: 依存関係
         working-directory: mcp-server
         run: bun install --frozen-lockfile
+
+      - name: バージョンを取得
+        id: version
+        run: echo "version=$(node -p "require('./mcp-server/package.json').version")" >> "$GITHUB_OUTPUT"
+
       - name: 型チェック
         working-directory: mcp-server
         run: bun run check
+
       - name: テスト
         working-directory: mcp-server
         run: bun test
@@ -35,54 +47,87 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
       - name: 依存関係
         working-directory: mcp-server
         run: bun install --frozen-lockfile
+
       # Windows 上でビルドすると --windows-hide-console が使える。
-      # MCP クライアントから起動されたときにコンソールが出ない。
+      # MCP クライアントから stdio で起動されたときにコンソールが出ない。
       - name: ビルド
         working-directory: mcp-server
         run: bun run build:win:native
-      - name: 動作確認
-        run: ./dist/gemma-mcp.exe --version
+
+      # --windows-hide-console を付けた exe は、コンソールから直接呼んでも
+      # PowerShell が出力を拾えないことがある。Start-Process でリダイレクトして確認する。
+      - name: 起動確認
+        shell: pwsh
+        run: |
+          Start-Process -FilePath ./dist/gemma-mcp.exe -ArgumentList "--version" `
+            -Wait -NoNewWindow -RedirectStandardOutput version.txt
+          $version = (Get-Content version.txt -Raw).Trim()
+          Write-Host "gemma-mcp $version"
+          if ($version -ne "${{ needs.test.outputs.version }}") {
+            throw "exe のバージョン ($version) が package.json (${{ needs.test.outputs.version }}) と一致しません"
+          }
+
+          Start-Process -FilePath ./dist/gemma-mcp.exe -ArgumentList "doctor" `
+            -Wait -NoNewWindow -RedirectStandardOutput doctor.txt
+          Get-Content doctor.txt | Out-Host
+
       - uses: actions/upload-artifact@v4
         with:
           name: gemma-mcp-exe
           path: dist/gemma-mcp.exe
           if-no-files-found: error
+          retention-days: 7
 
   package:
     name: zip とインストーラ
-    needs: exe
+    needs: [test, exe]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: gemma-mcp-exe
           path: dist
+
       - name: NSIS を導入
         run: sudo apt-get update && sudo apt-get install -y nsis
+
       - name: 配布物を作成
+        env:
+          VERSION: ${{ needs.test.outputs.version }}
         run: |
-          set -euo pipefail
-          version="$(node -p "require('./mcp-server/package.json').version")"
+          set -euxo pipefail
           staging=build/staging
           mkdir -p "$staging/scripts" "$staging/docs" "$staging/config"
           cp dist/gemma-mcp.exe README.md "$staging/"
           cp scripts/fetch-runtime.ps1 scripts/fetch-model.ps1 scripts/start-llama-server.cmd "$staging/scripts/"
-          cp docs/*.md "$staging/docs/"
+          cp docs/SETUP.md docs/MCP.md docs/SPEC.md "$staging/docs/"
           cp config/gemma.toml.example "$staging/config/"
-          (cd "$staging" && zip -qr "../../dist/portable-gemma-win-x64-$version.zip" .)
-          makensis -V2 "-DSTAGING=$PWD/$staging" "-DVERSION=$version" installer/portable-gemma.nsi
-          ls -lh dist
+          (cd "$staging" && zip -qr "$GITHUB_WORKSPACE/dist/portable-gemma-win-x64-$VERSION.zip" .)
+          makensis -V2 "-DSTAGING=$GITHUB_WORKSPACE/$staging" "-DVERSION=$VERSION" installer/portable-gemma.nsi
+
+      - name: チェックサム
+        working-directory: dist
+        run: |
+          sha256sum gemma-mcp.exe portable-gemma-win-x64-*.zip portable-gemma-setup-*.exe > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
       - uses: actions/upload-artifact@v4
         with:
           name: portable-gemma-win
           path: |
+            dist/gemma-mcp.exe
             dist/portable-gemma-win-x64-*.zip
             dist/portable-gemma-setup-*.exe
+            dist/SHA256SUMS.txt
           if-no-files-found: error
+          retention-days: 7
