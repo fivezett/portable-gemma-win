@@ -1,0 +1,21 @@
+{
+  "name": "gemma-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Portable Gemma 4 (llama.cpp / CUDA) exposed as an MCP server",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "check": "tsc --noEmit",
+    "test": "bun test",
+    "build:win": "bun build --compile --target=bun-windows-x64 --windows-hide-console --minify --outfile ../dist/gemma-mcp.exe src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.0",
+    "typescript": "^5.9.0"
+  }
+}
