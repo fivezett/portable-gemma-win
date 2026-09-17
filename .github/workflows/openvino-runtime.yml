@@ -21,6 +21,13 @@ on:
         description: "llama.cpp tag the runtime was built from"
         value: ${{ jobs.build.outputs.llamacpp_tag }}
   workflow_dispatch:
+  # Exercise the pipeline on the pull requests that can break it. Ordinary changes never
+  # touch these paths, so this does not slow the usual CI run down.
+  pull_request:
+    paths:
+      - ".github/workflows/openvino-runtime.yml"
+      - "openvino/**"
+      - "scripts/ci/package-openvino.ts"
 
 permissions:
   contents: read
