@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches: ["**"]
-    tags-ignore: ["v*"]   # タグは release.yml が処理する
+    tags-ignore: ["v*"]   # tags are handled by release.yml
   pull_request:
   workflow_dispatch:
 
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   lint:
-    name: ワークフローとスクリプトの検査
+    name: Lint workflows
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -29,11 +29,8 @@ jobs:
           curl -sSLo actionlint.tar.gz \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           tar xzf actionlint.tar.gz actionlint
-          # ubuntu ランナーには ShellCheck が同梱されているため、run ブロックの検査も走る
+          # ShellCheck ships with the ubuntu runner, so run blocks get linted too.
           ./actionlint -color
-
-      - name: shellcheck
-        run: shellcheck scripts/*.sh
 
   build:
     uses: ./.github/workflows/build.yml

@@ -1,19 +1,19 @@
 <#
 .SYNOPSIS
-    Gemma の GGUF を models\ に取得する。
+    Download a Gemma GGUF into models\.
 
 .DESCRIPTION
-    llama.cpp の -hf 指定をそのまま使うため、分割 GGUF やマルチモーダル用 projector の
-    解決も llama.cpp 側に任せられる。LLAMA_CACHE を models\ に向けているので、
-    フォルダごと別の PC に持って行ってもそのまま動く。
+    Uses llama.cpp's own -hf handling, so sharded GGUFs and multimodal projectors are
+    resolved by llama.cpp rather than by this script. LLAMA_CACHE points at models\, which
+    means the whole folder can be copied to another machine and still work.
 
-    gated なリポジトリを使う場合は環境変数 HF_TOKEN を設定しておくこと。
+    Set HF_TOKEN when the repository requires accepting a licence.
 
 .PARAMETER Model
-    "<HF リポジトリ>:<量子化>" 形式。省略時は config\gemma.toml の model.hf を読む。
+    "<hf repo>:<quantisation>". Defaults to model.hf from config\gemma.toml.
 
 .PARAMETER Force
-    キャッシュ済みでも再取得を試みる。
+    Try again even when something is already cached.
 
 .EXAMPLE
     .\fetch-model.ps1
@@ -61,14 +61,14 @@ function Get-CacheSize {
     return ($files | Measure-Object -Property Length -Sum).Sum
 }
 
-# ---- 実行 ----
+# ---- main ----
 
 if ($Model -eq "") { $Model = Get-ConfiguredModel }
 if ($Model -eq "") { $Model = $DefaultModel }
 
 $cli = Join-Path $RuntimeDir "llama-cli.exe"
 if (-not (Test-Path $cli)) {
-    throw "llama-cli.exe が見つかりません: $cli`n先に .\fetch-runtime.ps1 を実行してください。"
+    throw "llama-cli.exe not found at $cli`nRun .\fetch-runtime.ps1 first."
 }
 
 New-Item -ItemType Directory -Path $ModelsDir -Force | Out-Null
@@ -76,26 +76,26 @@ $env:LLAMA_CACHE = $ModelsDir
 
 $before = Get-CacheSize
 if ($before -gt 0 -and -not $Force) {
-    Write-Note ("models\ に既に {0:N2} GiB あります(不足分だけ追加取得します)" -f ($before / 1GB))
+    Write-Note ("models\ already holds {0:N2} GiB; only missing files are fetched" -f ($before / 1GB))
 }
 
-Write-Step "モデルを取得します: $Model"
-Write-Note "保存先: $ModelsDir"
-if ($env:HF_TOKEN) { Write-Note "HF_TOKEN を使用します" }
-Write-Note "初回は数 GB のダウンロードになります。完了まで待ってください。"
+Write-Step "Fetching model: $Model"
+Write-Note "Destination: $ModelsDir"
+if ($env:HF_TOKEN) { Write-Note "Using HF_TOKEN" }
+Write-Note "The first run downloads several GB. Let it finish."
 
-# -ngl 0 / -n 0 で GPU も生成も使わず、ダウンロードと読み込み確認だけを行う
+# -ngl 0 with -n 0 touches neither the GPU nor generation: it only downloads and loads.
 & $cli -hf $Model -ngl 0 -n 0 --no-warmup -p "" 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
 $exitCode = $LASTEXITCODE
 
 $after = Get-CacheSize
 if ($after -le $before -and $after -eq 0) {
-    throw "ダウンロードに失敗しました (llama-cli の終了コード: $exitCode)。リポジトリ名と量子化名、ネットワーク、HF_TOKEN を確認してください。"
+    throw "Download failed (llama-cli exited with $exitCode). Check the repository and quantisation names, the network, and HF_TOKEN."
 }
 
 Write-Host ""
-Write-Host "完了しました。" -ForegroundColor Green
-Write-Host ("  models\ の合計: {0:N2} GiB" -f ($after / 1GB))
+Write-Host "Done." -ForegroundColor Green
+Write-Host ("  models\ total: {0:N2} GiB" -f ($after / 1GB))
 if ($exitCode -ne 0) {
-    Write-Host "  (llama-cli は $exitCode で終了しましたが、ファイルは取得できています)" -ForegroundColor Yellow
+    Write-Host "  (llama-cli exited with $exitCode, but the files were downloaded)" -ForegroundColor Yellow
 }

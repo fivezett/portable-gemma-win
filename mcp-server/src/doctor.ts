@@ -44,7 +44,7 @@ function formatGiB(bytes: number): string {
 export async function doctor(config: Config): Promise<number> {
   const checks: Check[] = [];
 
-  checks.push({ label: "アプリのルート", ok: true, detail: paths.root });
+  checks.push({ label: "Application root", ok: true, detail: paths.root });
 
   const binaryExists = existsSync(config.server.binary);
   const version = binaryExists ? await run(config.server.binary, ["--version"]) : null;
@@ -53,7 +53,7 @@ export async function doctor(config: Config): Promise<number> {
     ok: binaryExists,
     detail: binaryExists
       ? `${config.server.binary}${version ? `\n    ${version.split(/\r?\n/)[0] ?? ""}` : ""}`
-      : `見つかりません: ${config.server.binary} → scripts/fetch-runtime.ps1 を実行してください`,
+      : `not found at ${config.server.binary} -- run scripts/fetch-runtime.ps1`,
   });
 
   if (isWindows) {
@@ -61,12 +61,12 @@ export async function doctor(config: Config): Promise<number> {
       ? readdirSync(paths.runtimeDir).filter((name) => /^(cudart|cublas|cublasLt)/i.test(name))
       : [];
     checks.push({
-      label: "CUDA ランタイム DLL",
+      label: "CUDA runtime DLLs",
       ok: cudart.length > 0,
       detail:
         cudart.length > 0
           ? cudart.slice(0, 4).join(", ")
-          : "cudart/cublas の DLL が runtime/llama に見つかりません(CPU 実行になります)",
+          : "no cudart/cublas DLLs in runtime/llama -- inference will fall back to CPU",
     });
   }
 
@@ -77,7 +77,7 @@ export async function doctor(config: Config): Promise<number> {
   checks.push({
     label: "GPU",
     ok: gpu !== null,
-    detail: gpu ?? "nvidia-smi を実行できません(NVIDIA ドライバ未導入か、GPU 非搭載)",
+    detail: gpu ?? "cannot run nvidia-smi (no NVIDIA driver, or no GPU)",
   });
 
   if (gpu) {
@@ -85,45 +85,45 @@ export async function doctor(config: Config): Promise<number> {
     const cap = Number(capText);
     if (Number.isFinite(cap)) {
       checks.push({
-        label: "CUDA 13 対応",
+        label: "CUDA 13 support",
         ok: cap >= 7.5,
         detail:
           cap >= 7.5
-            ? `compute capability ${capText} → cuda-13.x ビルドが使えます`
-            : `compute capability ${capText} → CUDA 13 は非対応。fetch-runtime.ps1 -Cuda 12.4 を使ってください`,
+            ? `compute capability ${capText} -- cuda-13.x builds work`
+            : `compute capability ${capText} -- CUDA 13 dropped this GPU; use fetch-runtime.ps1 -Cuda 12`,
       });
     }
   }
 
   const modelBytes = directorySize(paths.modelsDir);
   checks.push({
-    label: "モデル",
+    label: "Model",
     ok: modelBytes > 0 ? true : null,
     detail:
       modelBytes > 0
         ? `${paths.modelsDir} (${formatGiB(modelBytes)})`
-        : `未取得。初回起動時に ${config.model.hf} を自動ダウンロードします`,
+        : `not downloaded yet; ${config.model.hf} is fetched on first use`,
   });
 
   const llama = new LlamaServer(config);
   const healthy = await llama.health();
   const props = healthy ? await llama.props() : null;
   checks.push({
-    label: "llama-server の応答",
+    label: "llama-server health",
     ok: healthy ? true : null,
     detail: healthy
-      ? `${baseUrl(config)} で応答中${props?.model ? ` / model=${props.model}` : ""}`
-      : `${baseUrl(config)} は停止中(ツール呼び出し時に自動起動します)`,
+      ? `answering at ${baseUrl(config)}${props?.model ? ` / model=${props.model}` : ""}`
+      : `${baseUrl(config)} is down (it starts on the first tool call)`,
   });
 
   checks.push({
-    label: "設定ファイル",
+    label: "Config file",
     ok: existsSync(paths.configFile) ? true : null,
-    detail: existsSync(paths.configFile) ? paths.configFile : "未作成(既定値で動作します)",
+    detail: existsSync(paths.configFile) ? paths.configFile : "not present; defaults apply",
   });
 
   const lines = checks.map((check) => `  [${mark(check.ok)}] ${check.label}: ${check.detail}`);
-  process.stdout.write(`gemma-mcp 診断\n${lines.join("\n")}\n`);
+  process.stdout.write(`gemma-mcp diagnostics\n${lines.join("\n")}\n`);
 
   return checks.some((check) => check.ok === false) ? 1 : 0;
 }

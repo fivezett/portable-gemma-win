@@ -1,151 +1,143 @@
-# 設計と、そう決めた理由
+# Design notes
 
-## 全体構成
+## Shape
 
 ```
-MCP クライアント ──stdio/JSON-RPC── gemma-mcp.exe ──HTTP/127.0.0.1── llama-server.exe ── GGUF
+MCP client --stdio/JSON-RPC-- gemma-mcp.exe --HTTP/127.0.0.1-- llama-server.exe -- GGUF
 ```
 
-`gemma-mcp.exe` は Bun でビルドした単一実行ファイル。Node.js のインストールを要求しない。
-推論そのものは llama.cpp 公式の `llama-server.exe` に任せ、MCP との変換だけを担う。
+`gemma-mcp.exe` is a single executable built with Bun, so Node.js is never required.
+Inference itself is left to the official `llama-server.exe`; this process only translates
+between MCP and its HTTP API.
 
-## 推論を llama-server に任せる理由
+## Why llama-server does the inference
 
-検討した選択肢:
-
-| 方式 | 判断 |
+| Option | Verdict |
 |---|---|
-| **llama-server を子プロセスで起動し HTTP で叩く** | 採用 |
-| `llama-cli` をリクエストごとに起動 | 却下。毎回モデルをロードし直すため、E4B でも一呼び出しが数秒〜十数秒の固定費になる |
-| `node-llama-cpp` で同一プロセス内推論 | 却下。ネイティブアドオンを `bun build --compile` に埋め込むのが困難で、CUDA ビルドも二重管理になる |
+| **Spawn llama-server and talk HTTP** | Chosen |
+| Run `llama-cli` per request | Rejected. Reloading the model on every call is a fixed cost of seconds even for E4B |
+| `node-llama-cpp` in-process | Rejected. Embedding a native addon in `bun build --compile` is painful, and it means maintaining a second CUDA build |
 
-llama-server 方式の副次的な利点:
+The chosen option also brings:
 
-- KV キャッシュがプロセスをまたいで生き続ける
-- llama.cpp の WebUI がそのまま使える (動作確認が楽)
-- マルチモーダル (mmproj) が公式サポートの範囲で動く
-- llama.cpp 本体の更新に、スクリプトの取得先を変えるだけで追従できる
+- A KV cache that survives across calls
+- The llama.cpp web UI, which makes manual checks easy
+- Multimodal support (mmproj) as llama.cpp officially supports it
+- Upgrades to llama.cpp by changing what the download script fetches
 
-HTTP クライアントは Bun 内蔵の `fetch` のみを使い、OpenAI SDK は入れていない。
-SSE の解析は 30 行程度で済み、依存を増やす価値がないため。
+The HTTP client is Bun's built-in `fetch`; no OpenAI SDK. Parsing SSE takes about thirty
+lines and is not worth a dependency.
 
 ## MCP SDK
 
-`@modelcontextprotocol/server` v2 (spec 2026-07-28) を採用。
-`serveStdio()` は 2025 年世代のクライアントからの `initialize` も
-そのまま処理する (`legacy: 'serve'` が既定) ため、互換性を落とさずに新しい仕様に乗れる。
+`@modelcontextprotocol/server` v2 (spec 2026-07-28). `serveStdio()` also serves an
+`initialize` from a 2025-era client (`legacy: 'serve'` is the default), so adopting the
+newer spec costs no compatibility.
 
-スキーマは zod v4。`registerTool` に渡した zod スキーマから
-JSON Schema の生成と引数の検証、ハンドラの型推論までが導かれる。
+Schemas are zod v4. A single zod schema passed to `registerTool` produces the JSON Schema,
+validates the arguments and types the handler.
 
-### 長時間実行を tasks にしなかった理由
+### Why long generations do not use tasks
 
-当初は MCP v2 の tasks (`tasks/get`, `tasks/result`) で非同期化する想定だった。
-しかし SDK 2.0.0 の実装を確認したところ、
+The original plan was to make long calls asynchronous with MCP v2 tasks (`tasks/get`,
+`tasks/result`). Reading SDK 2.0.0 showed that:
 
-- `registerTool` の設定オブジェクトは `execution`(= `taskSupport` の宣言)を**受け取らずに捨てる**
-- タスクストアや `tasks/*` のハンドラは `McpServer` に**実装されていない**(スキーマ定義のみ)
+- `registerTool` **discards** `execution` (where `taskSupport` would be declared)
+- `McpServer` has **no task store and no `tasks/*` handlers** — only the schemas exist
 
-つまり tasks に対応するには、プロトコルの下回りを自前で実装することになる。
-クライアント側の対応状況も不透明なため、現時点では採用しない。
+Supporting tasks therefore means implementing that part of the protocol by hand, and client
+support is unclear. Not worth it yet.
 
-代わりに、SDK が完全にサポートしている次の 2 つで実用上の問題を潰している。
+Instead, two things the SDK does fully support cover the practical problem:
 
-- **進捗通知**: クライアントが `_meta.progressToken` を渡してきたらストリーミングに切り替え、
-  1 秒ごとに `notifications/progress` を送る。無反応に見える時間が無くなる
-- **キャンセル**: ハンドラに渡る `AbortSignal` を `fetch` までそのまま流す。
-  クライアントがキャンセルすれば llama-server 側の生成も止まる
+- **Progress**: when the client sends `_meta.progressToken`, switch to streaming and emit
+  `notifications/progress` once a second, so nothing looks hung.
+- **Cancellation**: the handler's `AbortSignal` is passed straight into `fetch`, so
+  cancelling the request stops generation on the llama-server side too.
 
-将来 SDK が tasks を実装したら、ツールの中身を変えずに上に乗せられる。
+If the SDK grows task support later, it can sit on top without changing the tools.
 
-## ステートレスにした理由
+## Why it is stateless
 
-`conversation_id` をサーバー側で持つ案も検討したが、採用しなかった。
+Holding conversations server-side behind a `conversation_id` was considered and dropped.
 
-- MCP クライアント側は既に会話履歴を持っている。二重管理になる
-- クライアントの再起動やセッション切り替えでサーバー側の状態が孤児になる
-- 破棄のタイミングを決められず、GC とメモリリークの温床になる
+- The MCP client already has the history; keeping a second copy invites drift
+- A client restart or session switch orphans server-side state
+- There is no good moment to expire it, which turns into a memory leak
 
-`gemma_chat` に全履歴を渡す方式なら、これらの問題が構造的に発生しない。
-トークンの再計算コストは llama.cpp のプレフィックスキャッシュがかなり吸収する。
+Passing the full history to `gemma_chat` makes all of that structurally impossible. Most of
+the recomputation cost is absorbed by llama.cpp's prefix cache.
 
-## 孤児プロセス対策 (Windows Job Object)
+## Orphan prevention (Windows Job Object)
 
-MCP クライアントが `gemma-mcp.exe` を `TerminateProcess` で強制終了した場合、
-JavaScript の終了ハンドラは走らない。そのままでは `llama-server.exe` が
-VRAM を数 GB 掴んだまま生き残る。
+When an MCP client kills `gemma-mcp.exe` with `TerminateProcess`, no JavaScript exit handler
+runs, and `llama-server.exe` survives holding several GB of VRAM.
 
-対策として `bun:ffi` から kernel32 を直接叩き、
-`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` を設定した Job Object に子プロセスを入れている。
-プロセスが死ねば OS がハンドルを閉じ、その時点で子も終了する。
-強制終了でも確実に効くのはこの方法だけ。
+So the process calls into kernel32 through `bun:ffi` and puts the child in a Job Object
+created with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. When the process dies the OS closes the
+handle and the child goes with it. Nothing else survives a forced kill.
 
-FFI が使えない環境 (Windows 以外、DLL の読み込み失敗) では、
-終了ハンドラによる停止にフォールバックし、警告をログに残す。
+Where FFI is unavailable (non-Windows, or the DLL fails to load) it falls back to exit
+handlers and logs a warning.
 
-**自分が起動したプロセスしか止めない**という制約も入れてある。
-手動で立てた llama-server や、別の MCP サーバーインスタンスが起動したものを
-巻き添えにしないため。
+**Only processes this server started are stopped.** A llama-server launched by hand, or by
+another instance, is never caught in the crossfire.
 
-## 設定ファイル形式
+## Configuration format
 
-TOML を採用。`Bun.TOML.parse` が標準で使えるため依存が増えず、
-コメント付きの設定テンプレートを配布できる。JSON はコメントが書けず、
-`.env` は階層を表現できない。
+TOML, because `Bun.TOML.parse` is built in — no dependency — and a commented template can
+ship with the release. JSON has no comments and `.env` has no structure.
 
-優先順位は `環境変数 > TOML > 既定値`。
-MCP クライアントの設定 JSON から `env` で上書きできることが重要で、
-これにより 1 つの exe を複数のモデル設定で使い分けられる。
+Precedence is `environment > TOML > defaults`. Being overridable from the MCP client's
+`env` block is the point: one executable, several model configurations.
 
-## ツールの粒度
+## Tool granularity
 
-`gemma_ask` / `gemma_chat` / `gemma_json` / `gemma_vision` / `gemma_status` の 5 本に絞った。
+Five tools: `gemma_ask`, `gemma_chat`, `gemma_json`, `gemma_vision`, `gemma_status`.
 
-`gemma_summarize` や `gemma_translate` のようなタスク特化ツールは作っていない。
-呼び出し側 (Claude など) が適切なプロンプトを書けるため、
-ツールを増やしてもツール一覧を汚すだけで、能力は増えないと判断した。
+There is deliberately no `gemma_summarize` or `gemma_translate`. The caller can write those
+prompts itself, so task-shaped tools would clutter the tool list without adding capability.
 
-## stdout の扱い
+## stdout discipline
 
-stdio トランスポートでは **stdout が JSON-RPC 専用**。
-1 行でも余計な出力が混ざるとプロトコルが壊れる。
+On a stdio transport, **stdout carries JSON-RPC and nothing else**. A single stray line
+breaks the protocol.
 
-そのためロガーは stderr とファイルにしか書かない。
-`llama-server` の標準出力も捕捉してログファイルに転記している。
-この規約はテストでも検証していて、stdout に JSON 以外が流れたら失敗する。
+The logger therefore writes only to stderr and the log file, and llama-server's own output
+is captured and relayed there too. The test suite asserts this: anything non-JSON on stdout
+fails the run.
 
-## トランスポート
+## Transport
 
-stdio のみ。Streamable HTTP も SDK でサポートされているが、
+stdio only. Streamable HTTP is supported by the SDK, but it drags in authentication, CORS
+and port management for no benefit when everything is local. If reaching the model from
+another machine ever matters, exposing `llama-server` itself is the simpler answer.
 
-- 認証、CORS、ポート管理といった考慮事項が一気に増える
-- ローカルで動かす前提なら stdio で足りる
+## Build and distribution
 
-という理由で入れていない。別 PC から使いたい要求が出たら、
-`llama-server` 自体を LAN に出す方が素直。
+- **Cross-compilation**: `bun build --compile --target=bun-windows-x64` produces the
+  executable from Linux, so CI and a developer machine make the same artifact
+- **Building on Windows**: `--windows-icon` and `--windows-hide-console` only work there.
+  Release executables are built on a Windows runner to get the hidden console
+- **Both shapes**: a portable archive and an NSIS installer. The installer asks for no
+  administrator rights and installs into `%LOCALAPPDATA%`, so it stays movable afterwards
+- **No bundled model**: several GB, and redistribution is a headache. It is an installer
+  option or a first-call download
 
-## ビルドと配布
+## Testing
 
-- **クロスビルド**: Linux から `bun build --compile --target=bun-windows-x64` で exe を生成できる。
-  CI でも開発機でも同じ成果物が作れる
-- **Windows でのビルド**: `--windows-icon` と `--windows-hide-console` は
-  Windows 上でのみ指定できる。リリース用の exe は windows ランナーでビルドし、
-  アイコンとコンソール非表示を付ける
-- **配布形態**: 持ち運び用の zip と NSIS インストーラの両方。
-  インストーラも管理者権限を要求せず `%LOCALAPPDATA%` に入れるため、
-  インストール後もフォルダごと移動できる
-- **モデルは同梱しない**: 数 GB あり、再配布の扱いも面倒になる。
-  インストーラのオプションか、初回のツール呼び出し時に取得する
+The suite starts a mock llama-server and **launches `gemma-mcp` as a real child process,
+exchanging JSON-RPC over stdio**. It runs on Linux CI, so argument translation, progress
+notifications, error handling and stdout hygiene are all covered without a Windows machine.
 
-## テスト
+Setting `GEMMA_MCP_BIN` points the same suite at a compiled binary instead of the sources.
+This is not optional polish: `bun build --compile` merges everything into one module graph
+and changes evaluation order, which has already broken a dependency in a way that only
+running the artifact could catch. CI runs the suite against the Windows executable, and
+`scripts/build.ts` compiles a host-native binary to do the same thing locally.
 
-`llama-server` のモックを立て、`gemma-mcp` を**実際に子プロセスとして起動して
-stdio 越しに JSON-RPC を往復させる**結合テストを置いている。
-Linux の CI でそのまま回るため、Windows 実機がなくても
-ツールの引数変換、進捗通知、エラー処理、stdout の衛生を検証できる。
+What is still unverified without real hardware:
 
-検証していない範囲 (実機が要る部分):
-
-- CUDA ビルドの実行と GPU オフロード
-- Job Object による道連れ終了
-- PowerShell スクリプトと NSIS インストーラの実動作
+- CUDA builds actually running and offloading to the GPU
+- Job Object teardown
+- The PowerShell scripts and the NSIS installer end to end

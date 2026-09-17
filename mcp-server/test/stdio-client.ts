@@ -6,7 +6,7 @@ type Pending = {
 };
 
 /**
- * 依存なしの最小 MCP クライアント。stdio 上の改行区切り JSON-RPC を読み書きする。
+ * Dependency-free MCP client: newline-delimited JSON-RPC over stdio.
  */
 export class StdioClient {
   private readonly proc: Subprocess<"pipe", "pipe", "pipe">;
@@ -53,7 +53,7 @@ export class StdioClient {
     try {
       message = JSON.parse(line) as Record<string, unknown>;
     } catch {
-      this.stderr.push(`stdout に JSON 以外が出力されました: ${line}`);
+      this.stderr.push(`non-JSON output on stdout: ${line}`);
       return;
     }
 
@@ -85,7 +85,7 @@ export class StdioClient {
       this.pending.set(id, { resolve, reject });
       setTimeout(() => {
         if (this.pending.delete(id)) {
-          reject(new Error(`${method} がタイムアウトしました\nstderr:\n${this.stderr.join("")}`));
+          reject(new Error(`${method} timed out\nstderr:\n${this.stderr.join("")}`));
         }
       }, timeoutMs);
     });

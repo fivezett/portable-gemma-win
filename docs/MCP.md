@@ -1,10 +1,9 @@
-# MCP クライアントへの登録とツール仕様
+# MCP client setup and tool reference
 
-## 登録
+## Registering the server
 
-`gemma-mcp.exe` は **stdio トランスポート**の MCP サーバーとして動く。
-MCP クライアントがプロセスを起動し、標準入出力で JSON-RPC をやり取りする。
-ポートを開けたり、先に何かを起動しておく必要はない。
+`gemma-mcp.exe` speaks MCP over **stdio**: the client launches the process and talks
+JSON-RPC across the pipes. Nothing has to be started or listening beforehand.
 
 ### Claude Code
 
@@ -12,7 +11,7 @@ MCP クライアントがプロセスを起動し、標準入出力で JSON-RPC 
 claude mcp add gemma -- "C:\Users\<user>\AppData\Local\PortableGemma\gemma-mcp.exe"
 ```
 
-### 設定ファイルで登録する場合
+### Configuration file
 
 ```json
 {
@@ -28,15 +27,16 @@ claude mcp add gemma -- "C:\Users\<user>\AppData\Local\PortableGemma\gemma-mcp.e
 }
 ```
 
-`gemma-mcp.exe print-config` で自分の環境に合わせた JSON を出力できる
-(インストーラは同じ内容を `mcp-config.json` に書き出す)。
+`gemma-mcp.exe print-config` prints this for the current machine; the installer writes the
+same content to `mcp-config.json`.
 
-`GEMMA_HOME` は省略してもよい。省略した場合は **exe の置かれているフォルダ**が
-アプリのルートとして使われる。exe だけを別の場所にコピーした場合は明示する。
+`GEMMA_HOME` is optional. Without it, the folder containing the executable is used as the
+application root, which is what you want unless the executable was copied elsewhere on its own.
 
-### 環境変数で設定を上書きする
+### Running several configurations
 
-同じ exe を別の設定で登録できる。例: 重いモデルを長いコンテキストで使う「熟考用」を別枠にする。
+The same executable can be registered more than once with different settings, for example
+a heavier model with a longer context for slower, more considered work.
 
 ```json
 {
@@ -56,59 +56,58 @@ claude mcp add gemma -- "C:\Users\<user>\AppData\Local\PortableGemma\gemma-mcp.e
 }
 ```
 
-**ポートは必ず分ける**。同じポートを指定すると、後から呼ばれた方が
-「既に起動している別モデルの llama-server」に接続してしまう。
+**Give each entry its own port.** Sharing one means the second server finds the first one's
+llama-server already answering and talks to the wrong model.
 
-## 起動と終了のふるまい
+## Lifecycle
 
-- ツールが最初に呼ばれた時点で `llama-server` を自動起動する (遅延起動)。
-  MCP クライアントの起動時に GPU を掴むことはない
-- 指定ポートで **既に llama-server が応答していれば、それを使う**。
-  二重にモデルをロードして VRAM を溶かすことはない
-- 自分で起動したプロセスだけを終了させる。手動起動したものには触らない
-- MCP クライアントに強制終了された場合も、Windows の Job Object により
-  `llama-server` が道連れで終了する。VRAM を掴んだ孤児プロセスは残らない
+- `llama-server` starts on the first tool call, not when the client starts, so registering
+  the server does not tie up the GPU.
+- If something is **already answering on the configured port, it is reused**. Two clients
+  will not load the model twice and exhaust VRAM.
+- Only a process this server started is ever stopped; anything started by hand is left alone.
+- If the MCP client kills the server outright, a Windows Job Object still takes
+  `llama-server` down with it. No orphan holding VRAM.
 
-## ツール
+## Tools
 
 ### `gemma_ask`
 
-単発の質問・指示。会話は保持しない。
+A single prompt. Stateless.
 
-| 引数 | 型 | 説明 |
+| Argument | Type | Notes |
 |---|---|---|
-| `prompt` | string (必須) | 指示または質問 |
-| `system` | string | システムプロンプト |
-| `temperature` / `top_p` / `top_k` | number | サンプリング。省略時は設定値 |
-| `max_tokens` | number | 生成上限 |
-| `stop` | string[] | 打ち切り文字列 (最大 8 件) |
+| `prompt` | string (required) | The instruction or question |
+| `system` | string | System prompt |
+| `temperature` / `top_p` / `top_k` | number | Sampling; defaults come from the config |
+| `max_tokens` | number | Generation cap |
+| `stop` | string[] | Up to 8 stop strings |
 
 ### `gemma_chat`
 
-会話履歴を渡して続きを生成する。**サーバーは状態を持たない**ため、
-呼び出し側が `messages` に全履歴を含める。
+Continue a conversation. **The server holds no state**, so the caller passes the whole
+history every time.
 
-| 引数 | 型 | 説明 |
+| Argument | Type | Notes |
 |---|---|---|
-| `messages` | `{role, content}[]` (必須) | 古い順の会話履歴。role は `system` / `user` / `assistant` |
-| その他 | | `gemma_ask` と同じ |
+| `messages` | `{role, content}[]` (required) | Oldest first; role is `system`, `user` or `assistant` |
+| others | | Same as `gemma_ask` |
 
 ### `gemma_json`
 
-JSON Schema を渡し、それに従う JSON だけを生成させる。
-llama.cpp 側で文法を強制するため、スキーマから外れた出力は構造的に発生しない。
-`temperature` の既定は 0。
+Generate JSON that conforms to a schema. llama.cpp constrains decoding with a grammar, so
+output outside the schema cannot be produced. `temperature` defaults to 0.
 
-| 引数 | 型 | 説明 |
+| Argument | Type | Notes |
 |---|---|---|
-| `prompt` | string (必須) | 抽出・分類の指示 |
-| `schema` | object (必須) | JSON Schema |
+| `prompt` | string (required) | What to extract or classify |
+| `schema` | object (required) | JSON Schema |
 | `system` | string | |
 | `temperature` / `max_tokens` | number | |
 
 ```json
 {
-  "prompt": "次のレビューを分類して: 起動は速いが電池の持ちが悪い",
+  "prompt": "Classify this review: boots fast but the battery drains quickly",
   "schema": {
     "type": "object",
     "properties": {
@@ -122,42 +121,44 @@ llama.cpp 側で文法を強制するため、スキーマから外れた出力�
 
 ### `gemma_vision`
 
-画像について質問する。`image_path` か `image_base64` のどちらかが必要。
-マルチモーダル用の projector (mmproj) が読み込まれている必要がある。
+Ask about an image. Needs either `image_path` or `image_base64`, and a multimodal
+projector (mmproj) has to be loaded.
 
-| 引数 | 型 | 説明 |
+| Argument | Type | Notes |
 |---|---|---|
-| `prompt` | string (必須) | 画像への質問 |
-| `image_path` | string | ローカル画像の絶対パス |
-| `image_base64` | string | base64 データ |
-| `mime_type` | string | `image_base64` を使うときの MIME タイプ |
+| `prompt` | string (required) | The question about the image |
+| `image_path` | string | Absolute path to a local image |
+| `image_base64` | string | Base64 data |
+| `mime_type` | string | MIME type for `image_base64` |
 
 ### `gemma_status`
 
-稼働状態を構造化して返す。生成が失敗するときの切り分けに使う。
+Structured status, for working out why generation is failing.
 
-返り値: `running` / `managed` / `endpoint` / `model` / `context_size` / `configured_model` / `autostart`
+Returns `running`, `managed`, `endpoint`, `model`, `context_size`, `configured_model` and
+`autostart`.
 
-## 長時間の生成
+## Long generations
 
-ローカル推論は数十秒から数分かかる。クライアントが `_meta.progressToken` を渡してきた場合、
-`gemma-mcp` は **ストリーミングで受信しながら進捗通知 (`notifications/progress`) を送る**。
-進捗値は生成済みの文字数。
+Local inference takes tens of seconds to minutes. When the client supplies
+`_meta.progressToken`, `gemma-mcp` switches to streaming and emits
+`notifications/progress` roughly once a second, counting characters generated so far.
 
-クライアントがリクエストをキャンセルした場合は `AbortSignal` が
-llama-server への HTTP リクエストまで伝播し、生成が止まる。
-暴走した生成を放置せずに済む。
+If the client cancels the request, the `AbortSignal` propagates all the way to the HTTP
+request against llama-server, so generation actually stops rather than running on unseen.
 
-タイムアウトは `config\gemma.toml` の `timeouts.request_ms` (既定 600 秒)。
+The per-request ceiling is `timeouts.request_ms` in `config\gemma.toml` (600 seconds by
+default).
 
-## 使いどころ
+## What it is good for
 
-Claude などの上位エージェントから見ると、`gemma` は
-**「無料で無制限に叩けるが、賢さは控えめな下請け」**として使うのが噛み合う。
+From the perspective of a larger agent, `gemma` is a **free, unlimited subordinate that is
+not as clever as you are**. That shapes what to send it:
 
-- 大量のテキストの一次要約・分類・タグ付け
-- 外部に出したくない内容の下処理
-- ログやエラーメッセージの整形
-- API 課金を使うほどでもない定型処理
+- First-pass summarising, classification and tagging over lots of text
+- Preprocessing material that should not leave the machine
+- Cleaning up logs and error messages
+- Routine work that is not worth an API call
 
-逆に、複雑な推論や長い依存関係のあるコード生成を丸ごと任せる用途には向かない。
+It is a poor choice for deep reasoning or for generating large amounts of interdependent
+code.

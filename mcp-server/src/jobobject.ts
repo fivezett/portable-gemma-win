@@ -3,21 +3,21 @@ import { log } from "./log.ts";
 import { isWindows } from "./paths.ts";
 
 /**
- * Windows の Job Object による子プロセスの道連れ終了。
+ * Tie the child process lifetime to ours using a Windows Job Object.
  *
- * MCP クライアントがこのプロセスを TerminateProcess で強制終了した場合、
- * 終了ハンドラは走らない。Job Object に JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE を
- * 設定しておくと、プロセス終了時に OS がハンドルを閉じ、その時点で
- * llama-server も道連れで落ちる。VRAM を掴んだ孤児プロセスを残さないための保険。
+ * When an MCP client kills this process with TerminateProcess, no exit handler runs.
+ * A Job Object created with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE closes together with
+ * the process, and the OS terminates everything in it at that moment. This is what
+ * keeps a llama-server holding several GB of VRAM from being orphaned.
  */
 
 const JobObjectExtendedLimitInformation = 9;
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x0000_2000;
 const PROCESS_TERMINATE = 0x0001;
 const PROCESS_SET_QUOTA = 0x0100;
-/** x64 での JOBOBJECT_EXTENDED_LIMIT_INFORMATION のサイズ */
+/** sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION) on x64 */
 const EXTENDED_LIMIT_INFORMATION_SIZE = 144;
-/** 同構造体内の BasicLimitInformation.LimitFlags のオフセット */
+/** Offset of BasicLimitInformation.LimitFlags within that struct */
 const LIMIT_FLAGS_OFFSET = 16;
 
 type Kernel32 = {
@@ -31,13 +31,13 @@ type Kernel32 = {
 
 let kernel32: Kernel32 | null = null;
 let kernel32Failed = false;
-/** ハンドルはプロセスが生きている間ずっと保持する(閉じた瞬間に子が死ぬため) */
+/** Held for the whole process lifetime: closing the handle kills the children */
 let jobHandle: unknown = null;
 
 function loadKernel32(): Kernel32 | null {
   if (kernel32 || kernel32Failed) return kernel32;
   try {
-    // bun:ffi は Windows 以外でも読み込めるが、kernel32 は Windows にしかない。
+    // bun:ffi loads anywhere, but kernel32 only exists on Windows.
     const lib = dlopen("kernel32.dll", {
       CreateJobObjectW: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
       SetInformationJobObject: {
@@ -53,7 +53,7 @@ function loadKernel32(): Kernel32 | null {
     return kernel32;
   } catch (error) {
     kernel32Failed = true;
-    log.warn("kernel32 の読み込みに失敗しました。Job Object による道連れ終了は無効です", error);
+    log.warn("Could not load kernel32; Job Object cleanup is disabled", error);
     return null;
   }
 }
@@ -63,7 +63,7 @@ function ensureJob(api: Kernel32): unknown {
 
   const handle = api.CreateJobObjectW(null, null);
   if (!handle) {
-    log.warn(`CreateJobObjectW に失敗しました (GetLastError=${api.GetLastError()})`);
+    log.warn(`CreateJobObjectW failed (GetLastError=${api.GetLastError()})`);
     return null;
   }
 
@@ -77,7 +77,7 @@ function ensureJob(api: Kernel32): unknown {
     EXTENDED_LIMIT_INFORMATION_SIZE,
   );
   if (ok === 0) {
-    log.warn(`SetInformationJobObject に失敗しました (GetLastError=${api.GetLastError()})`);
+    log.warn(`SetInformationJobObject failed (GetLastError=${api.GetLastError()})`);
     api.CloseHandle(handle);
     return null;
   }
@@ -87,8 +87,8 @@ function ensureJob(api: Kernel32): unknown {
 }
 
 /**
- * 指定 PID のプロセスを「親が死んだら一緒に死ぬ」Job に入れる。
- * @returns 成功したら true。失敗時は false(呼び出し側は終了ハンドラでの kill にフォールバックする)
+ * Put the given PID into a job that dies with this process.
+ * @returns true on success; false means the caller must fall back to exit handlers.
  */
 export function attachToKillOnExitJob(pid: number): boolean {
   if (!isWindows) return false;
@@ -101,17 +101,17 @@ export function attachToKillOnExitJob(pid: number): boolean {
 
   const processHandle = api.OpenProcess(PROCESS_TERMINATE | PROCESS_SET_QUOTA, 0, pid);
   if (!processHandle) {
-    log.warn(`OpenProcess に失敗しました pid=${pid} (GetLastError=${api.GetLastError()})`);
+    log.warn(`OpenProcess failed for pid=${pid} (GetLastError=${api.GetLastError()})`);
     return false;
   }
 
   try {
     const assigned = api.AssignProcessToJobObject(job, processHandle);
     if (assigned === 0) {
-      log.warn(`AssignProcessToJobObject に失敗しました pid=${pid} (GetLastError=${api.GetLastError()})`);
+      log.warn(`AssignProcessToJobObject failed for pid=${pid} (GetLastError=${api.GetLastError()})`);
       return false;
     }
-    log.debug(`llama-server を Job Object に登録しました pid=${pid}`);
+    log.debug(`Attached llama-server to the job object, pid=${pid}`);
     return true;
   } finally {
     api.CloseHandle(processHandle);

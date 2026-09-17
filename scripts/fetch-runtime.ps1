@@ -1,25 +1,25 @@
 <#
 .SYNOPSIS
-    llama.cpp の Windows バイナリ(CUDA 版)と CUDA ランタイム DLL を取得して runtime/llama に展開する。
+    Download the llama.cpp Windows CUDA build plus the CUDA runtime DLLs into runtime/llama.
 
 .DESCRIPTION
-    CUDA Toolkit のインストールは不要。公式リリースに同梱されている cudart を一緒に展開するため、
-    必要なのは NVIDIA のグラフィックスドライバだけ。
+    No CUDA Toolkit needed. The official releases ship cudart alongside the binaries, so an
+    NVIDIA graphics driver is the only prerequisite.
 
-    GPU の compute capability を nvidia-smi で判定し、7.5 未満(Pascal 以前)の場合は
-    CUDA 13 が非対応なので自動的に CUDA 12 系のビルドにフォールバックする。
+    The GPU's compute capability decides which build to take. CUDA 13 dropped support for
+    anything below 7.5 (Pascal and older), so those cards fall back to a CUDA 12 build.
 
 .PARAMETER Cuda
-    使用する CUDA のバージョン。"auto"(既定)、"13"、"12"、"13.4" のように指定する。
+    CUDA version to use: "auto" (default), "13", "12", or an exact "13.4".
 
 .PARAMETER Tag
-    llama.cpp のリリースタグ(例: b11010)。省略時は最新。
+    llama.cpp release tag such as b11010. Defaults to the latest release.
 
 .PARAMETER Arch
-    x64(既定)または arm64。
+    x64 (default) or arm64.
 
 .PARAMETER Force
-    既に展開済みでも再取得する。
+    Download again even when the runtime is already in place.
 
 .EXAMPLE
     .\fetch-runtime.ps1
@@ -65,14 +65,14 @@ function Resolve-CudaMajor {
 
     $cap = Get-ComputeCapability
     if ($null -eq $cap) {
-        Write-Note "nvidia-smi が使えないため CUDA 12 系を選択します(より広い GPU で動作します)"
+        Write-Note "nvidia-smi is unavailable; choosing CUDA 12, which supports more GPUs"
         return "12"
     }
-    Write-Note "GPU の compute capability: $cap"
+    Write-Note "GPU compute capability: $cap"
     if ($cap -ge 7.5) {
         return "13"
     }
-    Write-Note "CUDA 13 は compute capability 7.5 未満 (Pascal 以前) に非対応のため CUDA 12 系を選択します"
+    Write-Note "CUDA 13 does not support compute capability below 7.5 (Pascal and older); choosing CUDA 12"
     return "12"
 }
 
@@ -83,25 +83,25 @@ function Get-Releases {
     if ($Tag -ne "") {
         return @(Invoke-RestMethod -Uri "$ReleasesApi/tags/$Tag" -Headers $headers)
     }
-    # cudart が付いていないリリースもあるため、複数件さかのぼって探す
+    # Some releases ship no cudart, so look back through several of them.
     return Invoke-RestMethod -Uri "${ReleasesApi}?per_page=15" -Headers $headers
 }
 
 function Select-Assets {
     param($Releases, [string]$CudaMajor)
 
-    # "13" -> cuda-13.x のいずれか / "13.4" -> 完全一致
+    # "13" matches any cuda-13.x; "13.4" is an exact match.
     $pattern = if ($CudaMajor -match '^\d+$') { "cuda-$CudaMajor\.\d+" } else { [regex]::Escape("cuda-$CudaMajor") }
 
     foreach ($release in $Releases) {
         $main = $release.assets | Where-Object { $_.name -match "^llama-.+-bin-win-$pattern-$Arch\.zip$" } | Select-Object -First 1
         if (-not $main) { continue }
 
-        # main と同じ CUDA バージョンの cudart を選ぶ
+        # Pair the cudart archive with the exact CUDA version of the main archive.
         if ($main.name -match "bin-win-(cuda-\d+\.\d+)-") { $exactCuda = $Matches[1] } else { continue }
         $cudart = $release.assets | Where-Object { $_.name -eq "cudart-llama-bin-win-$exactCuda-$Arch.zip" } | Select-Object -First 1
         if (-not $cudart) {
-            Write-Note "$($release.tag_name): $exactCuda の cudart が無いため次のリリースを見ます"
+            Write-Note "$($release.tag_name): no cudart for $exactCuda; trying the next release"
             continue
         }
 
@@ -120,14 +120,14 @@ function Save-And-Expand {
 
     $zip = Join-Path $TempDir $Asset.name
     $sizeMb = [math]::Round($Asset.size / 1MB, 1)
-    Write-Step "$($Asset.name) を取得します ($sizeMb MB)"
+    Write-Step "Downloading $($Asset.name) ($sizeMb MB)"
     Invoke-WebRequest -Uri $Asset.browser_download_url -OutFile $zip -UseBasicParsing
 
-    Write-Note "展開中..."
+    Write-Note "Extracting..."
     $staging = Join-Path $TempDir ([IO.Path]::GetFileNameWithoutExtension($Asset.name))
     Expand-Archive -Path $zip -DestinationPath $staging -Force
 
-    # zip によっては 1 階層深い場合があるため、exe/dll のある階層を探して平坦化する
+    # Some archives nest everything one level deep; flatten to the level holding the binaries.
     $source = $staging
     $nested = Get-ChildItem -Path $staging -Directory
     if (-not (Get-ChildItem -Path $staging -Filter *.exe) -and -not (Get-ChildItem -Path $staging -Filter *.dll) -and $nested.Count -eq 1) {
@@ -138,25 +138,25 @@ function Save-And-Expand {
     Remove-Item $zip -Force
 }
 
-# ---- 実行 ----
+# ---- main ----
 
 $serverExe = Join-Path $RuntimeDir "llama-server.exe"
 if ((Test-Path $serverExe) -and -not $Force) {
-    Write-Host "既に展開済みです: $serverExe" -ForegroundColor Green
-    Write-Host "再取得する場合は -Force を付けてください。"
+    Write-Host "Already installed: $serverExe" -ForegroundColor Green
+    Write-Host "Pass -Force to download it again."
     exit 0
 }
 
 $cudaMajor = Resolve-CudaMajor -Requested $Cuda
-Write-Step "CUDA $cudaMajor 系のビルドを探します (arch=$Arch)"
+Write-Step "Looking for a CUDA $cudaMajor build (arch=$Arch)"
 
 $releases = Get-Releases
 $selected = Select-Assets -Releases $releases -CudaMajor $cudaMajor
 if (-not $selected) {
-    throw "CUDA $cudaMajor / $Arch に一致するリリース資産が見つかりませんでした。-Tag でリリースを明示するか -Cuda を変えてください。"
+    throw "No release asset matched CUDA $cudaMajor / $Arch. Pin a release with -Tag or pick another -Cuda."
 }
 
-Write-Note "リリース: $($selected.Tag) / $($selected.Cuda)"
+Write-Note "Release: $($selected.Tag) / $($selected.Cuda)"
 
 New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null
 $temp = Join-Path ([IO.Path]::GetTempPath()) ("gemma-runtime-" + [Guid]::NewGuid().ToString("N"))
@@ -170,10 +170,10 @@ try {
 }
 
 if (-not (Test-Path $serverExe)) {
-    throw "展開後も llama-server.exe が見つかりません: $RuntimeDir"
+    throw "llama-server.exe is still missing after extraction: $RuntimeDir"
 }
 
-# 取得したバージョンを記録しておく(更新判断とトラブル報告用)
+# Record what was installed, for upgrade decisions and bug reports.
 [pscustomobject]@{
     tag        = $selected.Tag
     cuda       = $selected.Cuda
@@ -182,6 +182,6 @@ if (-not (Test-Path $serverExe)) {
 } | ConvertTo-Json | Set-Content -Path (Join-Path $RuntimeDir "runtime-version.json") -Encoding UTF8
 
 Write-Host ""
-Write-Host "完了しました。" -ForegroundColor Green
+Write-Host "Done." -ForegroundColor Green
 Write-Host "  $serverExe"
 Write-Host "  llama.cpp $($selected.Tag) / $($selected.Cuda) / $Arch"

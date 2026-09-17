@@ -1,23 +1,24 @@
-# 自動リリース
+# Automated releases.
 #
-# 発火条件は 3 つ:
-#   1. main の HEAD のバージョンにタグが無い (= バージョンが上がった) → タグを打ってリリース
-#   2. v* のタグが push された                                 → そのタグでリリース
-#   3. 手動実行 (workflow_dispatch)                             → 指定バージョンでリリース
+# Three entry paths:
+#   1. a push to main whose package.json version has no tag yet -> tag it and release
+#   2. a v* tag push                                            -> release that tag
+#   3. a manual run                                             -> release the given version
 #
-# いずれの経路でも、既に同じタグが存在する場合は何もしない(二重リリースの防止)。
+# An existing tag always means "do nothing", so a release never happens twice.
+# The decision itself lives in scripts/ci/release-plan.ts.
 name: release
 
 on:
-  # paths フィルタは tags と併用すると AND になり、タグ push が弾かれるため使わない。
-  # 二重リリースは detect ジョブのタグ存在チェックで防ぐ。
+  # A paths filter cannot be combined with tags (they would be ANDed and tag pushes would
+  # be dropped), so the tag check in release-plan.ts is what prevents duplicate releases.
   push:
     branches: [main]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       version:
-        description: "リリースするバージョン(省略時は package.json の値)"
+        description: "Version to release (defaults to package.json)"
         type: string
         required: false
 
@@ -30,81 +31,38 @@ concurrency:
 
 jobs:
   detect:
-    name: リリース判定
+    name: Decide
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.decide.outputs.version }}
-      tag: ${{ steps.decide.outputs.tag }}
-      previous_tag: ${{ steps.decide.outputs.previous_tag }}
-      prerelease: ${{ steps.decide.outputs.prerelease }}
-      should_release: ${{ steps.decide.outputs.should_release }}
-      needs_tag: ${{ steps.decide.outputs.needs_tag }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      previous_tag: ${{ steps.plan.outputs.previous_tag }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      should_release: ${{ steps.plan.outputs.should_release }}
+      needs_tag: ${{ steps.plan.outputs.needs_tag }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: バージョンとタグを決める
-        id: decide
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: mcp-server/package.json
+
+      - name: Plan the release
+        id: plan
         env:
           INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          package_version="$(node -p "require('./mcp-server/package.json').version")"
-
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            version="${GITHUB_REF_NAME#v}"
-            if [ "$version" != "$package_version" ]; then
-              echo "::error::タグ ${GITHUB_REF_NAME} と package.json のバージョン ${package_version} が一致しません"
-              exit 1
-            fi
-            needs_tag=false
-          else
-            version="${INPUT_VERSION:-$package_version}"
-            needs_tag=true
-          fi
-
-          tag="v${version}"
-
-          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-              # タグ push 経路では、そのタグが存在するのが当たり前
-              needs_tag=false
-            else
-              echo "::notice::${tag} は既に存在するためリリースしません"
-              echo "should_release=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-
-          # 直前のタグ(リリースノートの差分起点)
-          previous_tag="$(git tag --list 'v*' --sort=-version:refname | grep -v "^${tag}$" | head -n1 || true)"
-
-          # 0.2.0-rc.1 のようにハイフンを含むものはプレリリース扱い
-          case "$version" in
-            *-*) prerelease=true ;;
-            *)   prerelease=false ;;
-          esac
-
-          {
-            echo "version=${version}"
-            echo "tag=${tag}"
-            echo "previous_tag=${previous_tag}"
-            echo "prerelease=${prerelease}"
-            echo "needs_tag=${needs_tag}"
-            echo "should_release=true"
-          } >> "$GITHUB_OUTPUT"
-
-          echo "リリース対象: ${tag} (前回: ${previous_tag:-なし} / プレリリース: ${prerelease})"
+        run: bun run scripts/ci/release-plan.ts
 
   build:
-    name: ビルド
+    name: Build
     needs: detect
     if: needs.detect.outputs.should_release == 'true'
     uses: ./.github/workflows/build.yml
 
   publish:
-    name: 公開
+    name: Publish
     needs: [detect, build]
     if: needs.detect.outputs.should_release == 'true'
     runs-on: ubuntu-latest
@@ -115,13 +73,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: バージョンの整合を確認
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: mcp-server/package.json
+
+      - name: Confirm the built version
+        env:
+          BUILT: ${{ needs.build.outputs.version }}
+          EXPECTED: ${{ needs.detect.outputs.version }}
         run: |
           set -euo pipefail
-          built="${{ needs.build.outputs.version }}"
-          expected="${{ needs.detect.outputs.version }}"
-          if [ "$built" != "$expected" ]; then
-            echo "::error::ビルドしたバージョン ($built) がリリース対象 ($expected) と一致しません"
+          if [ "$BUILT" != "$EXPECTED" ]; then
+            echo "::error::Built $BUILT but the release targets $EXPECTED"
             exit 1
           fi
 
@@ -130,68 +93,12 @@ jobs:
           name: portable-gemma-win
           path: dist
 
-      - name: タグを作成
-        if: needs.detect.outputs.needs_tag == 'true'
-        env:
-          TAG: ${{ needs.detect.outputs.tag }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "$TAG"
-          git push origin "$TAG"
-
-      - name: リリースノートを組み立てる
+      - name: Tag and publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.detect.outputs.tag }}
-          PREVIOUS_TAG: ${{ needs.detect.outputs.previous_tag }}
           VERSION: ${{ needs.detect.outputs.version }}
-        run: |
-          set -euo pipefail
-
-          # コミット一覧は GitHub に生成させる
-          if [ -n "$PREVIOUS_TAG" ]; then
-            gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-              -f tag_name="$TAG" -f previous_tag_name="$PREVIOUS_TAG" --jq .body > generated.md
-          else
-            gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-              -f tag_name="$TAG" --jq .body > generated.md
-          fi
-
-          # 定型部分はテンプレートから。コードブロックを含むため shell の展開は通さない。
-          CHECKSUMS="$(cat dist/SHA256SUMS.txt)"
-          export VERSION TAG CHECKSUMS REPOSITORY="$GITHUB_REPOSITORY"
-          python3 - > header.md <<'PY'
-          import os
-          import pathlib
-
-          template = pathlib.Path(".github/release-notes-template.md").read_text(encoding="utf-8")
-          for key in ("VERSION", "TAG", "REPOSITORY", "CHECKSUMS"):
-              template = template.replace("{{" + key + "}}", os.environ[key])
-          print(template, end="")
-          PY
-
-          cat header.md generated.md > release-notes.md
-          cat release-notes.md
-
-      - name: リリースを作成
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.detect.outputs.tag }}
+          PREVIOUS_TAG: ${{ needs.detect.outputs.previous_tag }}
+          NEEDS_TAG: ${{ needs.detect.outputs.needs_tag }}
           PRERELEASE: ${{ needs.detect.outputs.prerelease }}
-        run: |
-          set -euo pipefail
-          flags=()
-          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
-
-          gh release create "$TAG" \
-            --title "$TAG" \
-            --notes-file release-notes.md \
-            "${flags[@]}" \
-            dist/portable-gemma-setup-*.exe \
-            dist/portable-gemma-win-x64-*.zip \
-            dist/gemma-mcp.exe \
-            dist/SHA256SUMS.txt
-
-          echo "::notice::${TAG} を公開しました"
+        run: bun run scripts/ci/publish-release.ts

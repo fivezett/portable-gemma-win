@@ -12,6 +12,13 @@ let home: string;
 
 const entry = join(import.meta.dir, "..", "src", "index.ts");
 
+/**
+ * By default the suite runs the TypeScript sources. Setting GEMMA_MCP_BIN points it at a
+ * compiled executable instead, so CI can exercise the artifact it is about to ship.
+ * Bundling changes module evaluation order, and only running the real binary catches that.
+ */
+const command = process.env.GEMMA_MCP_BIN ? [process.env.GEMMA_MCP_BIN] : ["bun", "run", entry];
+
 type ToolResult = {
   content?: { type: string; text?: string }[];
   structuredContent?: Record<string, unknown>;
@@ -32,15 +39,20 @@ function firstText(result: ToolResult): string {
   return result.content?.find((part) => part.type === "text")?.text ?? "";
 }
 
+function lastCompletionBody<T>(): T {
+  const entry = mock.requests.filter((request) => request.path === "/v1/chat/completions").at(-1);
+  return entry?.body as T;
+}
+
 beforeAll(async () => {
   mock = startMockLlama();
   home = mkdtempSync(join(tmpdir(), "gemma-mcp-test-"));
 
-  client = new StdioClient(["bun", "run", entry], {
+  client = new StdioClient(command, {
     GEMMA_HOME: home,
     GEMMA_PORT: String(mock.port),
     GEMMA_HOST: "127.0.0.1",
-    // llama-server の実体は無いので自動起動は止め、モックだけを見る
+    // There is no real llama-server here, so never try to spawn one: talk to the mock.
     GEMMA_AUTOSTART: "0",
     GEMMA_LOG_LEVEL: "error",
     GEMMA_MAX_TOKENS: "256",
@@ -62,7 +74,7 @@ afterAll(async () => {
 });
 
 describe("MCP surface", () => {
-  test("5 つのツールを公開する", async () => {
+  test("exposes exactly the five tools", async () => {
     const result = await client.request("tools/list");
     const tools = (result.tools ?? []) as { name: string; inputSchema?: unknown }[];
     const names = tools.map((tool) => tool.name).sort();
@@ -75,34 +87,31 @@ describe("MCP surface", () => {
 });
 
 describe("gemma_ask", () => {
-  test("モックの応答をそのまま返す", async () => {
-    mock.reply = "テスト応答";
-    const result = await callTool("gemma_ask", { prompt: "こんにちは" });
+  test("returns what the model produced", async () => {
+    mock.reply = "test response";
+    const result = await callTool("gemma_ask", { prompt: "hello" });
 
     expect(result.isError).toBeFalsy();
-    expect(firstText(result)).toContain("テスト応答");
+    expect(firstText(result)).toContain("test response");
   });
 
-  test("system と max_tokens がリクエストに反映される", async () => {
-    await callTool("gemma_ask", { prompt: "要約して", system: "あなたは要約器です", max_tokens: 64 });
+  test("forwards system prompt and max_tokens", async () => {
+    await callTool("gemma_ask", { prompt: "summarise this", system: "You are a summariser", max_tokens: 64 });
 
-    const last = mock.requests.filter((entry) => entry.path === "/v1/chat/completions").at(-1);
-    const body = last?.body as { messages: { role: string; content: string }[]; max_tokens: number };
-
-    expect(body.messages[0]).toEqual({ role: "system", content: "あなたは要約器です" });
-    expect(body.messages[1]).toEqual({ role: "user", content: "要約して" });
+    const body = lastCompletionBody<{ messages: { role: string; content: string }[]; max_tokens: number }>();
+    expect(body.messages[0]).toEqual({ role: "system", content: "You are a summariser" });
+    expect(body.messages[1]).toEqual({ role: "user", content: "summarise this" });
     expect(body.max_tokens).toBe(64);
   });
 
-  test("progressToken があるとストリーミングして進捗を通知する", async () => {
-    mock.reply = "進捗テスト";
+  test("streams and reports progress when given a progress token", async () => {
+    mock.reply = "progress test";
     const before = client.notifications.length;
 
-    const result = await callTool("gemma_ask", { prompt: "数えて" }, { progressToken: "tok-1" });
-    expect(firstText(result)).toContain("進捗テスト");
+    const result = await callTool("gemma_ask", { prompt: "count" }, { progressToken: "tok-1" });
+    expect(firstText(result)).toContain("progress test");
 
-    const last = mock.requests.filter((entry) => entry.path === "/v1/chat/completions").at(-1);
-    expect((last?.body as { stream: boolean }).stream).toBe(true);
+    expect(lastCompletionBody<{ stream: boolean }>().stream).toBe(true);
 
     const progress = client.notifications
       .slice(before)
@@ -113,21 +122,19 @@ describe("gemma_ask", () => {
 });
 
 describe("gemma_chat", () => {
-  test("会話履歴をそのまま渡す", async () => {
+  test("passes the conversation history through unchanged", async () => {
     await callTool("gemma_chat", {
       messages: [
-        { role: "user", content: "1 足す 1 は?" },
-        { role: "assistant", content: "2 です" },
-        { role: "user", content: "では 2 足す 2 は?" },
+        { role: "user", content: "what is 1 + 1?" },
+        { role: "assistant", content: "2" },
+        { role: "user", content: "and 2 + 2?" },
       ],
     });
 
-    const last = mock.requests.filter((entry) => entry.path === "/v1/chat/completions").at(-1);
-    const body = last?.body as { messages: unknown[] };
-    expect(body.messages).toHaveLength(3);
+    expect(lastCompletionBody<{ messages: unknown[] }>().messages).toHaveLength(3);
   });
 
-  test("空の messages はスキーマで弾かれる", async () => {
+  test("rejects an empty message list through the schema", async () => {
     const result = await callTool("gemma_chat", { messages: [] });
     expect(result.isError).toBe(true);
     expect(firstText(result)).toContain("validation error");
@@ -135,7 +142,7 @@ describe("gemma_chat", () => {
 });
 
 describe("gemma_json", () => {
-  test("response_format に JSON Schema を渡す", async () => {
+  test("constrains decoding with the supplied JSON Schema", async () => {
     mock.reply = '{"sentiment":"positive"}';
     const schema = {
       type: "object",
@@ -143,14 +150,13 @@ describe("gemma_json", () => {
       required: ["sentiment"],
     };
 
-    const result = await callTool("gemma_json", { prompt: "感情を判定して: 最高だ", schema });
+    const result = await callTool("gemma_json", { prompt: "classify: this is great", schema });
     expect(firstText(result)).toContain("positive");
 
-    const last = mock.requests.filter((entry) => entry.path === "/v1/chat/completions").at(-1);
-    const body = last?.body as {
+    const body = lastCompletionBody<{
       response_format: { type: string; json_schema: { schema: unknown; strict: boolean } };
       temperature: number;
-    };
+    }>();
     expect(body.response_format.type).toBe("json_schema");
     expect(body.response_format.json_schema.schema).toEqual(schema);
     expect(body.temperature).toBe(0);
@@ -158,31 +164,32 @@ describe("gemma_json", () => {
 });
 
 describe("gemma_vision", () => {
-  test("base64 画像を data URL にして送る", async () => {
-    mock.reply = "赤い四角が写っています";
+  test("wraps base64 image data in a data URL", async () => {
+    mock.reply = "a red square";
     const result = await callTool("gemma_vision", {
-      prompt: "何が写っている?",
+      prompt: "what is in this image?",
       image_base64: "iVBORw0KGgo=",
       mime_type: "image/png",
     });
 
     expect(result.isError).toBeFalsy();
-    const last = mock.requests.filter((entry) => entry.path === "/v1/chat/completions").at(-1);
-    const body = last?.body as { messages: { content: { type: string; image_url?: { url: string } }[] }[] };
+    const body = lastCompletionBody<{
+      messages: { content: { type: string; image_url?: { url: string } }[] }[];
+    }>();
     const parts = body.messages[0]?.content ?? [];
     expect(parts[0]?.type).toBe("image_url");
     expect(parts[0]?.image_url?.url).toBe("data:image/png;base64,iVBORw0KGgo=");
   });
 
-  test("画像が無い場合はエラーを返す", async () => {
-    const result = await callTool("gemma_vision", { prompt: "何が写っている?" });
+  test("errors when no image is supplied", async () => {
+    const result = await callTool("gemma_vision", { prompt: "what is in this image?" });
     expect(result.isError).toBe(true);
     expect(firstText(result)).toContain("image_path");
   });
 });
 
 describe("gemma_status", () => {
-  test("構造化された状態を返す", async () => {
+  test("returns structured status", async () => {
     const result = await callTool("gemma_status", {});
     const structured = (result.structuredContent ?? result.result) as Record<string, unknown> | undefined;
 
@@ -195,9 +202,9 @@ describe("gemma_status", () => {
   });
 });
 
-describe("stdout の衛生", () => {
-  test("JSON-RPC 以外が stdout に出力されない", () => {
-    const strays = client.stderr.filter((line) => line.includes("stdout に JSON 以外が出力されました"));
+describe("stdout hygiene", () => {
+  test("nothing but JSON-RPC reaches stdout", () => {
+    const strays = client.stderr.filter((line) => line.includes("non-JSON output on stdout"));
     expect(strays).toHaveLength(0);
   });
 });

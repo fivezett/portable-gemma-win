@@ -31,9 +31,9 @@ export type CompletionOptions = {
   maxTokens?: number;
   stop?: string[];
   responseFormat?: Record<string, unknown>;
-  /** 中断シグナル。MCP のキャンセル通知をそのまま渡す */
+  /** Abort signal; the MCP cancellation signal is passed straight through */
   signal?: AbortSignal;
-  /** 生成の途中経過。渡すとストリーミングで受信する */
+  /** Incremental output callback; providing it switches to streaming */
   onProgress?: (accumulated: string, delta: string) => void;
 };
 
@@ -42,7 +42,7 @@ export type CompletionResult = {
   finishReason: string | null;
   promptTokens: number | null;
   completionTokens: number | null;
-  /** tok/s (llama-server の timings から算出。取得できなければ null) */
+  /** Tokens per second from llama-server timings, or null when unavailable */
   tokensPerSecond: number | null;
 };
 
@@ -67,7 +67,7 @@ export class LlamaServer {
   private child: ChildProcess | null = null;
   private starting: Promise<void> | null = null;
   private ready = false;
-  /** このプロセスが起動した llama-server かどうか。外部起動のものは停止しない */
+  /** Whether we started this llama-server; externally started ones are left alone */
   private ownsProcess = false;
   private exitHandlersInstalled = false;
 
@@ -79,7 +79,7 @@ export class LlamaServer {
     return baseUrl(this.config);
   }
 
-  /** 自分が起動したプロセスかどうか(gemma_status 用) */
+  /** Exposed through gemma_status: did we start the process ourselves? */
   get managed(): boolean {
     return this.ownsProcess && this.child !== null;
   }
@@ -92,7 +92,7 @@ export class LlamaServer {
     return headers;
   }
 
-  /** /health を叩く。200 なら生成可能 */
+  /** Poll /health; 200 means the model is loaded and ready */
   async health(timeoutMs = 2000): Promise<boolean> {
     try {
       const response = await fetch(`${this.endpoint}/health`, {
@@ -143,7 +143,7 @@ export class LlamaServer {
       String(server.parallel),
       "-fa",
       runtime.flashAttn,
-      // ツール呼び出しや構造化出力のために chat template を有効化する
+      // Chat template support, required for structured output and tool calls
       "--jinja",
     ];
 
@@ -190,19 +190,19 @@ export class LlamaServer {
 
     if (!existsSync(server.binary)) {
       throw new LlamaError(
-        `llama-server が見つかりません: ${server.binary}\n` +
-          "scripts/fetch-runtime.ps1 を実行してランタイムを取得してください。",
+        `llama-server not found at ${server.binary}\n` +
+          "Run scripts/fetch-runtime.ps1 to download the runtime.",
       );
     }
     if (model.path !== "" && !existsSync(model.path)) {
-      throw new LlamaError(`指定された GGUF が見つかりません: ${model.path}`);
+      throw new LlamaError(`Configured GGUF not found: ${model.path}`);
     }
 
     mkdirSync(paths.modelsDir, { recursive: true });
     mkdirSync(paths.logsDir, { recursive: true });
 
     const args = this.buildArgs();
-    log.info("llama-server を起動します", { binary: server.binary, args });
+    log.info("Starting llama-server", { binary: server.binary, args });
 
     const child = spawn(server.binary, args, {
       cwd: paths.runtimeDir,
@@ -210,7 +210,7 @@ export class LlamaServer {
       stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...process.env,
-        // GGUF の保存先をアプリ配下に固定し、フォルダごと持ち運べるようにする
+        // Pin GGUF storage inside the app folder so the whole thing stays portable
         LLAMA_CACHE: paths.modelsDir,
       },
     });
@@ -224,7 +224,7 @@ export class LlamaServer {
     if (typeof child.pid === "number") {
       const attached = attachToKillOnExitJob(child.pid);
       if (!attached) {
-        log.debug("Job Object を使えないため、終了ハンドラでの停止のみになります");
+        log.debug("No job object available; falling back to exit-handler shutdown");
       }
     }
 
@@ -234,10 +234,10 @@ export class LlamaServer {
       this.ready = false;
       this.child = null;
       this.ownsProcess = false;
-      log.warn("llama-server が終了しました", { code, signal });
+      log.warn("llama-server exited", { code, signal });
     });
     child.once("error", (error) => {
-      log.error("llama-server の起動に失敗しました", error);
+      log.error("Failed to spawn llama-server", error);
     });
 
     const deadline = Date.now() + this.config.timeouts.startupMs;
@@ -245,37 +245,37 @@ export class LlamaServer {
       if (exited) {
         const detail = exited as { code: number | null; signal: NodeJS.Signals | null };
         throw new LlamaError(
-          `llama-server が起動直後に終了しました (code=${detail.code} signal=${detail.signal})。` +
-            `詳細は ${paths.logFile} を確認してください。`,
+          `llama-server exited during startup (code=${detail.code} signal=${detail.signal}). ` +
+            `See ${paths.logFile} for details.`,
         );
       }
       if (await this.health()) {
         this.ready = true;
-        log.info("llama-server の準備ができました", { endpoint: this.endpoint });
+        log.info("llama-server is ready", { endpoint: this.endpoint });
         return;
       }
       await Bun.sleep(500);
     }
 
     throw new LlamaError(
-      `llama-server が ${this.config.timeouts.startupMs} ms 以内に応答しませんでした。` +
-        "初回はモデルのダウンロードに時間がかかります。timeouts.startup_ms を延ばすか、" +
-        "scripts/fetch-model.ps1 で先にモデルを取得してください。",
+      `llama-server did not become ready within ${this.config.timeouts.startupMs} ms. ` +
+        "The first run downloads the model, which takes a while. Either raise timeouts.startup_ms " +
+        "or fetch the model up front with scripts/fetch-model.ps1.",
     );
   }
 
-  /** 生成可能な状態を保証する。外部起動済みならそれを使い、無ければ自動起動する */
+  /** Ensure the server can generate: reuse a running one, otherwise start it. */
   async ensureReady(): Promise<void> {
     if (this.ready && this.child !== null) return;
     if (await this.health()) {
       this.ready = true;
-      // 自分で起動していないプロセス = 手動起動。停止の責任は持たない。
+      // Something we did not spawn: started by hand, so not ours to stop.
       if (this.child === null) this.ownsProcess = false;
       return;
     }
     if (!this.config.server.autostart) {
       throw new LlamaError(
-        `${this.endpoint} で llama-server が応答しません。autostart が無効なため自動起動しません。`,
+        `Nothing is answering at ${this.endpoint} and autostart is disabled.`,
       );
     }
     if (!this.starting) {
@@ -323,7 +323,7 @@ export class LlamaServer {
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
       throw new LlamaError(
-        `llama-server がエラーを返しました (HTTP ${response.status}): ${detail.slice(0, 500)}`,
+        `llama-server returned an error (HTTP ${response.status}): ${detail.slice(0, 500)}`,
         response.status,
       );
     }
@@ -351,7 +351,7 @@ export class LlamaServer {
   private async completeStreaming(options: CompletionOptions): Promise<CompletionResult> {
     const response = await this.post(this.buildBody(options, true), this.requestSignal(options.signal));
     const body = response.body;
-    if (!body) throw new LlamaError("ストリーミング応答の本文を取得できませんでした");
+    if (!body) throw new LlamaError("Streaming response had no body");
 
     const decoder = new TextDecoder();
     const reader = body.getReader();
@@ -368,7 +368,7 @@ export class LlamaServer {
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
-        // SSE は空行区切り。行頭 "data: " のみ処理する。
+        // SSE events are separated by a blank line; only "data:" lines matter.
         let separator = buffer.indexOf("\n\n");
         while (separator !== -1) {
           const event = buffer.slice(0, separator);
@@ -415,7 +415,7 @@ export class LlamaServer {
     return { text, finishReason, promptTokens, completionTokens, tokensPerSecond };
   }
 
-  /** 終了ハンドラから呼ぶ同期停止。自分が起動したプロセスだけ落とす */
+  /** Synchronous stop for exit handlers; only touches a process we started. */
   stopSync(): void {
     const child = this.child;
     if (!child || !this.ownsProcess) return;
@@ -424,7 +424,7 @@ export class LlamaServer {
     try {
       child.kill();
     } catch (error) {
-      log.warn("llama-server の停止に失敗しました", error);
+      log.warn("Failed to stop llama-server", error);
     }
   }
 

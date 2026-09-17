@@ -2,11 +2,12 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * アプリのルート(= 持ち運ぶフォルダ)を解決する。
+ * Resolve the application root (the folder you carry around).
  *
- * - GEMMA_HOME が指定されていればそれを最優先
- * - bun build --compile した exe から起動された場合は exe のあるフォルダ
- * - `bun run src/index.ts` の開発実行では mcp-server/ の親 (リポジトリルート)
+ * - GEMMA_HOME wins when set.
+ * - When launched from an executable built with `bun build --compile`,
+ *   it is the folder containing that executable.
+ * - During development (`bun run src/index.ts`) it is the repository root.
  */
 function detectAppRoot(): string {
   const fromEnv = process.env.GEMMA_HOME;
@@ -24,9 +25,9 @@ export const appRoot: string = detectAppRoot();
 
 export const paths = {
   root: appRoot,
-  /** llama.cpp の Windows バイナリ一式 */
+  /** llama.cpp Windows binaries and the bundled CUDA DLLs */
   runtimeDir: join(appRoot, "runtime", "llama"),
-  /** GGUF の保存先。LLAMA_CACHE としてそのまま llama.cpp に渡す */
+  /** GGUF storage, passed to llama.cpp as LLAMA_CACHE */
   modelsDir: join(appRoot, "models"),
   configDir: join(appRoot, "config"),
   configFile: join(appRoot, "config", "gemma.toml"),
@@ -36,7 +37,7 @@ export const paths = {
 
 export const isWindows: boolean = process.platform === "win32";
 
-/** 実行ファイル名は OS 依存にする (Linux 上でのテストを可能にするため) */
+/** Platform-specific binary name, so the code can also be exercised on Linux. */
 export function serverBinaryName(): string {
   return isWindows ? "llama-server.exe" : "llama-server";
 }

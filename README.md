@@ -1,67 +1,67 @@
 # portable-gemma-win
 
-Windows で持ち運べる **Gemma 4 + llama.cpp (CUDA)** 環境。
-ローカルの Gemma を **MCP サーバー**として公開し、Claude Code などの MCP クライアントから
-ツールとして呼び出せるようにする。
+A portable **Gemma 4 + llama.cpp (CUDA)** setup for Windows that serves the local model
+over **MCP**, so clients like Claude Code can call it as a tool.
 
-- **インストール不要な構成**: CUDA Toolkit も Node.js も要らない。必要なのは NVIDIA のドライバだけ
-- **フォルダごと持ち運べる**: 実行ファイル・ランタイム・モデル・設定がすべて 1 つのフォルダに収まる
-- **課金なし・外部送信なし**: 推論はすべてローカルの GPU で走る
+- **Nothing to install**: no CUDA Toolkit, no Node.js. An NVIDIA graphics driver is enough.
+- **Carry the folder**: executable, runtime, models and configuration all live in one directory.
+- **No API bills, no data leaving the machine**: inference runs on the local GPU.
 
 ```
-MCP クライアント (Claude Code など)
-        │  stdio / JSON-RPC
-        ▼
-   gemma-mcp.exe          ← Bun で単一 exe 化した MCP サーバー
-        │  HTTP (127.0.0.1)
-        ▼
-   llama-server.exe       ← llama.cpp 公式 Windows CUDA ビルド
-        │
-        ▼
+MCP client (Claude Code, ...)
+        |  stdio / JSON-RPC
+        v
+   gemma-mcp.exe          single-file MCP server, built with Bun
+        |  HTTP (127.0.0.1)
+        v
+   llama-server.exe       official llama.cpp Windows CUDA build
+        |
+        v
    Gemma 4 (GGUF)
 ```
 
-## 必要なもの
+## Requirements
 
-| 項目 | 条件 |
+| | |
 |---|---|
 | OS | Windows 10 / 11 (x64) |
-| GPU | NVIDIA。CUDA 13 ビルドは **Turing 世代 (GTX 1600 / RTX 2000) 以降**が必須 |
-| ドライバ | NVIDIA グラフィックスドライバ。**CUDA Toolkit は不要** |
-| VRAM | 8 GB で Gemma 4 E4B (Q4) が動く。12 GB 以上あれば 12B も選べる |
-| ディスク | ランタイム約 300 MB + モデル 3〜8 GB |
+| GPU | NVIDIA. The CUDA 13 builds need **Turing (GTX 1600 / RTX 2000) or newer** |
+| Driver | An NVIDIA graphics driver. **No CUDA Toolkit.** |
+| VRAM | 8 GB runs Gemma 4 E4B at Q4. 12 GB or more opens up the 12B model |
+| Disk | ~300 MB of runtime plus 3-8 GB of model weights |
 
-Pascal 以前 (GTX 10xx など) は CUDA 13 の対象外なので、セットアップスクリプトが
-自動的に CUDA 12 系のビルドにフォールバックする。
+CUDA 13 dropped Pascal and older, so on a GTX 10xx the setup script falls back to a
+CUDA 12 build automatically.
 
-## セットアップ
+## Setup
 
-### インストーラを使う場合
+### With the installer
 
-`portable-gemma-setup-<version>.exe` を実行する。管理者権限は不要で、既定では
-`%LOCALAPPDATA%\PortableGemma` に入る。ランタイムとモデルの取得もインストーラから実行できる。
+Run `portable-gemma-setup-<version>.exe`. It needs no administrator rights and installs
+into `%LOCALAPPDATA%\PortableGemma` by default. The runtime and the model can be
+downloaded from the installer as well.
 
-### zip を展開する場合
+### From the archive
 
 ```powershell
-# 1. 任意の場所に展開する (USB メモリでも可)
-# 2. llama.cpp のランタイムを取得する
+# 1. Extract anywhere, including a USB stick
+# 2. Fetch the llama.cpp runtime
 powershell -ExecutionPolicy Bypass -File .\scripts\fetch-runtime.ps1
 
-# 3. モデルを取得する (省略可。初回のツール呼び出し時に自動取得される)
+# 3. Fetch the model (optional; it downloads on the first tool call otherwise)
 powershell -ExecutionPolicy Bypass -File .\scripts\fetch-model.ps1
 
-# 4. 環境を確認する
+# 4. Check the environment
 .\gemma-mcp.exe doctor
 ```
 
-## MCP クライアントへの登録
+## Registering with an MCP client
 
 ```bash
 claude mcp add gemma -- "C:\path\to\gemma-mcp.exe"
 ```
 
-設定ファイルで登録する場合:
+Or in a configuration file:
 
 ```json
 {
@@ -74,58 +74,61 @@ claude mcp add gemma -- "C:\path\to\gemma-mcp.exe"
 }
 ```
 
-`gemma-mcp.exe print-config` でこの JSON を出力できる。詳細は [docs/MCP.md](docs/MCP.md)。
+`gemma-mcp.exe print-config` prints that JSON for your machine. See [docs/MCP.md](docs/MCP.md)
+for the details.
 
-## 公開されるツール
+## Tools
 
-| ツール | 用途 |
+| Tool | Purpose |
 |---|---|
-| `gemma_ask` | 単発の質問・指示。要約や下書きなど |
-| `gemma_chat` | 会話履歴を渡して続きを生成する |
-| `gemma_json` | JSON Schema を渡して構造化出力を強制する |
-| `gemma_vision` | 画像について質問する (mmproj が必要) |
-| `gemma_status` | モデルやコンテキスト長など、稼働状態を返す |
+| `gemma_ask` | One-shot prompt: summaries, drafts, rewrites |
+| `gemma_chat` | Continue a conversation from supplied history |
+| `gemma_json` | Constrain output to a JSON Schema |
+| `gemma_vision` | Ask about an image (needs mmproj) |
+| `gemma_status` | Report the running model, context size and health |
 
-## フォルダ構成
+## Layout
 
 ```
 PortableGemma/
-├── gemma-mcp.exe              MCP サーバー本体
-├── mcp-config.json            MCP クライアント用の設定 (インストーラが生成)
-├── config/gemma.toml          設定ファイル
-├── runtime/llama/             llama.cpp のバイナリと CUDA DLL
-├── models/                    GGUF (LLAMA_CACHE)
-├── logs/gemma-mcp.log         ログ
-├── scripts/                   取得・起動スクリプト
-└── docs/                      ドキュメント
+├── gemma-mcp.exe              the MCP server
+├── mcp-config.json            client configuration (written by the installer)
+├── config/gemma.toml          configuration
+├── runtime/llama/             llama.cpp binaries and CUDA DLLs
+├── models/                    GGUF files (LLAMA_CACHE)
+├── logs/gemma-mcp.log         logs
+├── scripts/                   download and launch scripts
+└── docs/                      documentation
 ```
 
-## ドキュメント
+## Documentation
 
-- [docs/SETUP.md](docs/SETUP.md) — セットアップ詳細、モデル選定、トラブルシューティング
-- [docs/MCP.md](docs/MCP.md) — MCP クライアントへの登録とツールの仕様
-- [docs/SPEC.md](docs/SPEC.md) — 設計と、そう決めた理由
-- [docs/RELEASE.md](docs/RELEASE.md) — CI / CD とリリース手順
+- [docs/SETUP.md](docs/SETUP.md) — setup, model selection, troubleshooting
+- [docs/MCP.md](docs/MCP.md) — client registration and the tool reference
+- [docs/SPEC.md](docs/SPEC.md) — the design and why it looks like this
+- [docs/RELEASE.md](docs/RELEASE.md) — CI/CD and how releases work
 
-## 開発
+## Development
 
 ```bash
 cd mcp-server
 bun install
-bun test          # モックの llama-server に対する stdio 越しの結合テスト
-bun run check     # 型チェック (TypeScript 7)
-cd .. && ./scripts/build.sh   # exe / zip / インストーラを生成
+bun test          # integration tests over stdio against a mock llama-server
+bun run check     # typecheck (TypeScript 7)
+
+cd ..
+bun run scripts/build.ts    # executable, portable archive and installer
 ```
 
-リリースは `mcp-server/package.json` のバージョンを上げて `main` に push するだけで、
-タグの作成から GitHub Release の公開まで自動で走る。詳細は [docs/RELEASE.md](docs/RELEASE.md)。
+To release, bump the version and push to `main`; tagging and publishing happen
+automatically. See [docs/RELEASE.md](docs/RELEASE.md).
 
 ```bash
-./scripts/release.sh 0.2.0
+bun run scripts/release.ts 0.2.0
 git push origin main
 ```
 
-## ライセンス
+## Licence
 
-このリポジトリのコードは MIT。
-llama.cpp (MIT) と Gemma 4 (Apache-2.0) はそれぞれのライセンスに従う。
+The code in this repository is MIT.
+llama.cpp (MIT) and Gemma 4 (Apache-2.0) keep their own licences.

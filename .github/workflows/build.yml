@@ -1,12 +1,12 @@
-# 再利用可能ワークフロー。CI とリリースの両方から呼ばれる。
-# 成果物は artifacts として次のジョブに渡す。
+# Reusable workflow shared by CI and the release pipeline.
+# Artifacts are handed to the calling workflow through the artifact store.
 name: build
 
 on:
   workflow_call:
     outputs:
       version:
-        description: "mcp-server/package.json のバージョン"
+        description: "Version from mcp-server/package.json"
         value: ${{ jobs.test.outputs.version }}
 
 permissions:
@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   test:
-    name: 型チェックとテスト
+    name: Typecheck and test
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -23,26 +23,27 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          # The Bun version is pinned by "packageManager" in that file.
+          bun-version-file: mcp-server/package.json
 
-      - name: 依存関係
+      - name: Install dependencies
         working-directory: mcp-server
         run: bun install --frozen-lockfile
 
-      - name: バージョンを取得
+      - name: Read version
         id: version
         run: echo "version=$(node -p "require('./mcp-server/package.json').version")" >> "$GITHUB_OUTPUT"
 
-      - name: 型チェック
+      - name: Typecheck
         working-directory: mcp-server
         run: bun run check
 
-      - name: テスト
+      - name: Test
         working-directory: mcp-server
         run: bun test
 
   exe:
-    name: Windows 実行ファイル
+    name: Windows executable
     needs: test
     runs-on: windows-latest
     steps:
@@ -50,21 +51,29 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version-file: mcp-server/package.json
 
-      - name: 依存関係
+      - name: Install dependencies
         working-directory: mcp-server
         run: bun install --frozen-lockfile
 
-      # Windows 上でビルドすると --windows-hide-console が使える。
-      # MCP クライアントから stdio で起動されたときにコンソールが出ない。
-      - name: ビルド
+      # Building on Windows allows --windows-hide-console, which keeps a console window
+      # from appearing when an MCP client launches the server over stdio.
+      - name: Build
         working-directory: mcp-server
         run: bun run build:win:native
 
-      # --windows-hide-console を付けた exe は、コンソールから直接呼んでも
-      # PowerShell が出力を拾えないことがある。Start-Process でリダイレクトして確認する。
-      - name: 起動確認
+      # Compiling bundles everything into one module graph and changes evaluation order.
+      # Running the suite against the artifact is the only way to catch breakage from that.
+      - name: Smoke-test the artifact
+        working-directory: mcp-server
+        env:
+          GEMMA_MCP_BIN: ${{ github.workspace }}\dist\gemma-mcp.exe
+        run: bun test
+
+      # A hidden-console executable does not always hand its output back to the calling
+      # shell, so redirect through Start-Process instead of capturing it directly.
+      - name: Check the reported version
         shell: pwsh
         run: |
           Start-Process -FilePath ./dist/gemma-mcp.exe -ArgumentList "--version" `
@@ -72,12 +81,8 @@ jobs:
           $version = (Get-Content version.txt -Raw).Trim()
           Write-Host "gemma-mcp $version"
           if ($version -ne "${{ needs.test.outputs.version }}") {
-            throw "exe のバージョン ($version) が package.json (${{ needs.test.outputs.version }}) と一致しません"
+            throw "Executable reports $version but package.json says ${{ needs.test.outputs.version }}"
           }
-
-          Start-Process -FilePath ./dist/gemma-mcp.exe -ArgumentList "doctor" `
-            -Wait -NoNewWindow -RedirectStandardOutput doctor.txt
-          Get-Content doctor.txt | Out-Host
 
       - uses: actions/upload-artifact@v4
         with:
@@ -87,39 +92,27 @@ jobs:
           retention-days: 7
 
   package:
-    name: zip とインストーラ
+    name: Archive and installer
     needs: [test, exe]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: mcp-server/package.json
 
       - uses: actions/download-artifact@v4
         with:
           name: gemma-mcp-exe
           path: dist
 
-      - name: NSIS を導入
+      - name: Install NSIS
         run: sudo apt-get update && sudo apt-get install -y nsis
 
-      - name: 配布物を作成
-        env:
-          VERSION: ${{ needs.test.outputs.version }}
-        run: |
-          set -euxo pipefail
-          staging=build/staging
-          mkdir -p "$staging/scripts" "$staging/docs" "$staging/config"
-          cp dist/gemma-mcp.exe README.md "$staging/"
-          cp scripts/fetch-runtime.ps1 scripts/fetch-model.ps1 scripts/start-llama-server.cmd "$staging/scripts/"
-          cp docs/SETUP.md docs/MCP.md docs/SPEC.md "$staging/docs/"
-          cp config/gemma.toml.example "$staging/config/"
-          (cd "$staging" && zip -qr "$GITHUB_WORKSPACE/dist/portable-gemma-win-x64-$VERSION.zip" .)
-          makensis -V2 "-DSTAGING=$GITHUB_WORKSPACE/$staging" "-DVERSION=$VERSION" installer/portable-gemma.nsi
-
-      - name: チェックサム
-        working-directory: dist
-        run: |
-          sha256sum gemma-mcp.exe portable-gemma-win-x64-*.zip portable-gemma-setup-*.exe > SHA256SUMS.txt
-          cat SHA256SUMS.txt
+      # Same script developers run locally, packaging the executable built on Windows.
+      - name: Package
+        run: bun run scripts/build.ts --package-only
 
       - uses: actions/upload-artifact@v4
         with:

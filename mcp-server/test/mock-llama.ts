@@ -1,6 +1,6 @@
 /**
- * テスト用の llama-server モック。
- * /health, /props, /v1/chat/completions (通常 / ストリーミング) だけを実装する。
+ * Minimal llama-server stand-in for tests.
+ * Implements only /health, /props and /v1/chat/completions (plain and streaming).
  */
 export type MockRequestLog = {
   path: string;
@@ -10,14 +10,14 @@ export type MockRequestLog = {
 export type MockLlama = {
   port: number;
   requests: MockRequestLog[];
-  /** 生成させたい応答テキスト(チャンク分割してストリーミングされる) */
+  /** Text the mock should answer with; streamed one character per chunk */
   reply: string;
   stop: () => void;
 };
 
 export function startMockLlama(): MockLlama {
   const state: { reply: string; requests: MockRequestLog[] } = {
-    reply: "こんにちは、Gemma です。",
+    reply: "Hello, this is Gemma.",
     requests: [],
   };
 

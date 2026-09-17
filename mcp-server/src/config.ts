@@ -6,32 +6,32 @@ export type Config = {
   server: {
     host: string;
     port: number;
-    /** 既に llama-server が動いていない場合に自動起動するか */
+    /** Start llama-server on demand when nothing is answering yet */
     autostart: boolean;
-    /** llama-server.exe のパス(既定は runtime/llama/) */
+    /** Path to llama-server.exe; defaults to runtime/llama/ */
     binary: string;
-    /** llama-server の WebUI を有効にするか */
+    /** Serve the llama.cpp web UI */
     webui: boolean;
-    /** llama-server に要求する API キー(空なら無し) */
+    /** API key required by llama-server; empty disables it */
     apiKey: string;
-    /** 同時処理スロット数 */
+    /** Number of parallel slots */
     parallel: number;
   };
   model: {
-    /** Hugging Face 指定。例: unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL */
+    /** Hugging Face spec, e.g. unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL */
     hf: string;
-    /** ローカル GGUF のパス。指定されていれば hf より優先 */
+    /** Local GGUF path; takes precedence over `hf` when set */
     path: string;
-    /** マルチモーダル用 projector。空なら llama.cpp の自動解決に任せる */
+    /** Multimodal projector; empty lets llama.cpp resolve it */
     mmproj: string;
-    /** 表示名 (llama-server の --alias) */
+    /** Display name passed to llama-server as --alias */
     alias: string;
   };
   runtime: {
     ctx: number;
     ngl: number;
     flashAttn: "on" | "off" | "auto";
-    /** llama-server にそのまま渡す追加引数 */
+    /** Extra arguments forwarded to llama-server verbatim */
     extraArgs: string[];
   };
   sampling: {
@@ -41,14 +41,14 @@ export type Config = {
     maxTokens: number;
   };
   timeouts: {
-    /** 起動〜/health が ok になるまで。初回はモデル DL を含むので長め */
+    /** Startup until /health returns ok; generous because the first run downloads the model */
     startupMs: number;
-    /** 1 リクエストあたりの上限 */
+    /** Per-request ceiling */
     requestMs: number;
   };
   log: {
     level: "debug" | "info" | "warn" | "error";
-    /** llama-server の stdout/stderr をログに転記するか */
+    /** Relay llama-server stdout/stderr into the log file */
     llamaOutput: boolean;
   };
 };
@@ -130,8 +130,8 @@ function oneOf<T extends string>(value: unknown, allowed: readonly T[], fallback
 }
 
 /**
- * 追加引数の文字列を分割する。引用符で囲まれた区間は 1 引数として扱う。
- * 例: `--override-kv "tokenizer.ggml.add_bos=bool:false" -np 2`
+ * Split an extra-argument string, keeping quoted spans as a single argument.
+ * Example: `--override-kv "tokenizer.ggml.add_bos=bool:false" -np 2`
  */
 export function splitArgs(input: unknown): string[] {
   if (Array.isArray(input)) return input.filter((v): v is string => typeof v === "string");
@@ -171,13 +171,13 @@ function readToml(file: string): Raw {
     const parsed = Bun.TOML.parse(readFileSync(file, "utf8"));
     return typeof parsed === "object" && parsed !== null ? (parsed as Raw) : {};
   } catch (error) {
-    // 設定ファイルが壊れていても既定値で起動できるようにする。
+    // A broken config file must not stop the server from starting on defaults.
     process.stderr.write(`[gemma-mcp] config parse failed (${file}): ${String(error)}\n`);
     return {};
   }
 }
 
-/** 相対パスはアプリのルート基準で解決する */
+/** Relative paths resolve against the application root. */
 function resolveFromRoot(value: string): string {
   if (value === "") return "";
   return isAbsolute(value) ? value : resolve(paths.root, value);

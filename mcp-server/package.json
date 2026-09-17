@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "bun@1.3.11",
   "description": "Portable Gemma 4 (llama.cpp / CUDA) exposed as an MCP server",
   "scripts": {
     "dev": "bun run src/index.ts",

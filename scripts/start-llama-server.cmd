@@ -1,20 +1,20 @@
 @echo off
-rem llama-server だけを手動起動する。WebUI (http://127.0.0.1:18080) の確認や
-rem MCP を介さない動作チェックに使う。停止は Ctrl+C。
+rem Start llama-server by hand, for checking the web UI or testing without MCP in the way.
+rem Stop it with Ctrl+C.
 setlocal
 
 set "ROOT=%~dp0.."
 set "LLAMA_CACHE=%ROOT%\models"
 
 if not exist "%ROOT%\runtime\llama\llama-server.exe" (
-  echo llama-server.exe が見つかりません。先に scripts\fetch-runtime.ps1 を実行してください。
+  echo llama-server.exe is missing. Run scripts\fetch-runtime.ps1 first.
   exit /b 1
 )
 
-"%ROOT%\dist\gemma-mcp.exe" serve
+"%ROOT%\gemma-mcp.exe" serve
 if errorlevel 1 (
   echo.
-  echo gemma-mcp.exe が無い、または失敗しました。llama-server を直接起動します。
+  echo gemma-mcp.exe is missing or failed. Falling back to llama-server directly.
   "%ROOT%\runtime\llama\llama-server.exe" --host 127.0.0.1 --port 18080 -hf unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL -c 16384 -ngl 99 -fa on --jinja --alias gemma
 )
 

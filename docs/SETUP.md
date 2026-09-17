@@ -1,158 +1,156 @@
-# セットアップ詳細
+# Setup
 
-## 1. GPU とランタイムの選択
+## 1. GPU and runtime
 
-llama.cpp は公式リリースで Windows 向けの CUDA ビルドを配布しており、
-**CUDA ランタイム DLL (cudart) が同梱されている**。そのため CUDA Toolkit のインストールは不要で、
-NVIDIA のグラフィックスドライバさえ入っていれば動く。
+The official llama.cpp releases ship Windows CUDA builds **with the CUDA runtime DLLs
+included**, so there is no CUDA Toolkit to install. An NVIDIA graphics driver is enough.
 
-`scripts\fetch-runtime.ps1` は `nvidia-smi` で GPU の compute capability を調べ、
-使うビルドを自動で決める。
+`scripts\fetch-runtime.ps1` asks `nvidia-smi` for the GPU's compute capability and picks a
+build from that.
 
-| GPU 世代 | compute capability | 選択されるビルド |
+| GPU generation | Compute capability | Build chosen |
 |---|---|---|
 | Blackwell (RTX 50xx) | 12.0 | `cuda-13.x` |
 | Ada (RTX 40xx) | 8.9 | `cuda-13.x` |
 | Ampere (RTX 30xx) | 8.6 | `cuda-13.x` |
 | Turing (RTX 20xx / GTX 16xx) | 7.5 | `cuda-13.x` |
-| Volta / Pascal / Maxwell | 7.0 以下 | `cuda-12.x` |
+| Volta / Pascal / Maxwell | 7.0 and below | `cuda-12.x` |
 
-CUDA 13 は Maxwell / Pascal / Volta のサポートを打ち切っているため、
-GTX 10xx 世代では CUDA 12 系のビルドが必要になる。明示したい場合:
+CUDA 13 dropped Maxwell, Pascal and Volta, which is why a GTX 10xx needs a CUDA 12 build.
+To be explicit about it:
 
 ```powershell
 .\scripts\fetch-runtime.ps1 -Cuda 12 -Force
-.\scripts\fetch-runtime.ps1 -Cuda 13.4 -Tag b11010   # バージョンを固定する
+.\scripts\fetch-runtime.ps1 -Cuda 13.4 -Tag b11010   # pin an exact release
 ```
 
-取得したバージョンは `runtime\llama\runtime-version.json` に記録される。
+What was installed is recorded in `runtime\llama\runtime-version.json`.
 
-## 2. モデルの選定
+## 2. Choosing a model
 
-Gemma 4 には E2B / E4B / 12B / 26B-A4B (MoE) / 31B がある。
-量子化した GGUF を GPU に載せる前提での目安は次のとおり。
+Gemma 4 comes as E2B, E4B, 12B, 26B-A4B (mixture of experts) and 31B. Rough figures for
+running a quantised GGUF on the GPU:
 
-| モデル | Q4 相当の必要メモリ | 推奨 VRAM | コンテキスト |
+| Model | Memory at Q4 | Recommended VRAM | Context |
 |---|---|---|---|
-| E2B | 約 3 GB | 4 GB〜 | 128K |
-| **E4B (既定)** | 約 5 GB | **8 GB〜** | 128K |
-| 12B | 約 8 GB | 12〜16 GB | 256K |
-| 26B-A4B (MoE) | 約 18 GB | 24 GB〜 | 256K |
-| 31B | 約 20 GB | 24 GB〜 | 256K |
+| E2B | ~3 GB | 4 GB+ | 128K |
+| **E4B (default)** | ~5 GB | **8 GB+** | 128K |
+| 12B | ~8 GB | 12-16 GB | 256K |
+| 26B-A4B (MoE) | ~18 GB | 24 GB+ | 256K |
+| 31B | ~20 GB | 24 GB+ | 256K |
 
-**重みだけでなく KV キャッシュも VRAM を食う**点に注意する。コンテキストを伸ばすほど
-KV キャッシュが増えるため、8 GB の GPU で 128K を張ろうとすると破綻する。
-既定の `ctx = 16384` は 8 GB で E4B を無理なく動かすための値。
+**The KV cache costs VRAM on top of the weights**, and it grows with the context length.
+Asking for 128K of context on an 8 GB card will not end well. The default `ctx = 16384`
+is chosen to keep E4B comfortable on 8 GB.
 
-モデルを変えるには `config\gemma.toml` の `[model] hf` を書き換える:
+Switch models by editing `[model] hf` in `config\gemma.toml`:
 
 ```toml
 [model]
 hf = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
 
 [runtime]
-ctx = 8192    # 12B を 12 GB VRAM に載せるならコンテキストを絞る
+ctx = 8192    # shorter context to fit 12B on a 12 GB card
 ```
 
-QAT (Quantization Aware Training) 版は、同じビット数でも通常の量子化より劣化が小さい。
-持ち運び用途では QAT 版を優先するとよい。
+QAT (quantisation aware training) builds degrade less than ordinary quantisation at the
+same bit width, which makes them a good default here.
 
-### モデルの置き場所
+### Where models are stored
 
-`LLAMA_CACHE` を `models\` に向けているため、`-hf` で取得したファイルはすべて
-アプリのフォルダ配下に入る。**フォルダごとコピーすれば別の PC でもそのまま動く**。
+`LLAMA_CACHE` points at `models\`, so everything fetched with `-hf` lands inside the
+application folder. **Copying the folder to another machine carries the models with it.**
 
-オフラインの PC に持ち込む場合は、ネットのある PC で `fetch-model.ps1` まで済ませてから
-フォルダ全体をコピーする。
+For an offline machine, run `fetch-model.ps1` somewhere with a network first, then copy
+the whole folder across.
 
-ローカルの `.gguf` を直接指定することもできる:
+A local `.gguf` works too:
 
 ```toml
 [model]
 path = "D:\\models\\gemma-4-E4B-it-Q4_K_M.gguf"
 ```
 
-### gated なリポジトリ
+### Gated repositories
 
-Hugging Face 側でアクセス承認が必要なリポジトリを使う場合は、環境変数 `HF_TOKEN` を設定する。
+Set `HF_TOKEN` when the Hugging Face repository requires accepting a licence.
 
-## 3. 設定
+## 3. Configuration
 
-`config\gemma.toml` を編集する。値の優先順位は次のとおり。
+Edit `config\gemma.toml`. Values resolve in this order:
 
 ```
-MCP クライアントが渡す環境変数 > OS の環境変数 > config\gemma.toml > 既定値
+environment variables from the MCP client > OS environment > config\gemma.toml > defaults
 ```
 
-環境変数は `GEMMA_` 接頭辞で、すべての設定項目に対応している
-(`GEMMA_PORT`, `GEMMA_MODEL_HF`, `GEMMA_CTX`, `GEMMA_NGL`, `GEMMA_MAX_TOKENS` など)。
-MCP クライアントの設定ファイル側で上書きできるので、同じ exe を複数の設定で使い分けられる。
+Every setting has a `GEMMA_`-prefixed environment variable (`GEMMA_PORT`, `GEMMA_MODEL_HF`,
+`GEMMA_CTX`, `GEMMA_NGL`, `GEMMA_MAX_TOKENS`, ...). Because MCP clients can set those per
+server entry, one executable can serve several different configurations.
 
-よく触る項目:
+The settings worth revisiting:
 
-| 項目 | 意味 | 調整の指針 |
+| Setting | Meaning | When to change it |
 |---|---|---|
-| `runtime.ctx` | コンテキスト長 | VRAM が足りなければ減らす |
-| `runtime.ngl` | GPU に載せる層数 | 99 = 全部。溢れるなら減らして CPU に逃がす |
-| `sampling.max_tokens` | 1 回の生成上限 | 長文生成が切れるなら増やす |
-| `timeouts.startup_ms` | 起動待ちの上限 | 初回ダウンロードが間に合わないなら増やす |
-| `server.parallel` | 同時処理スロット | VRAM を食うので 8 GB では 1 のまま |
+| `runtime.ctx` | Context length | Lower it when VRAM runs short |
+| `runtime.ngl` | Layers on the GPU | 99 means all; lower it to spill onto the CPU |
+| `sampling.max_tokens` | Per-call generation cap | Raise it if long answers get cut off |
+| `timeouts.startup_ms` | Startup budget | Raise it if the first download does not finish in time |
+| `server.parallel` | Parallel slots | Costs VRAM; keep at 1 on 8 GB |
 
-## 4. 動作確認
+## 4. Checking it works
 
 ```powershell
 .\gemma-mcp.exe doctor
 ```
 
-GPU、ランタイム、CUDA DLL、モデル、llama-server の応答、設定ファイルをまとめて確認できる。
+This reports the GPU, the runtime, the CUDA DLLs, the model, llama-server's health and the
+configuration file in one pass.
 
-WebUI で手触りを見たい場合:
+To poke at the model directly:
 
 ```powershell
 .\scripts\start-llama-server.cmd
-# ブラウザで http://127.0.0.1:18080
+# then open http://127.0.0.1:18080
 ```
 
-## トラブルシューティング
+## Troubleshooting
 
-### `llama-server が見つかりません`
+### "llama-server not found"
 
-`scripts\fetch-runtime.ps1` を実行していない。実行しても失敗する場合は、
-GitHub API のレート制限 (未認証で 1 時間 60 回) の可能性があるため、
-`GITHUB_TOKEN` を設定して再試行する。
+`scripts\fetch-runtime.ps1` has not been run. If it fails, the GitHub API rate limit
+(60 requests an hour unauthenticated) is the usual cause; set `GITHUB_TOKEN` and retry.
 
-### 起動はするが極端に遅い
+### It runs, but very slowly
 
-GPU に載っていない。`doctor` で CUDA ランタイム DLL が見つかっているか確認し、
-`logs\gemma-mcp.log` に `CUDA` のデバイス情報が出ているかを見る。
-DLL が無い場合は `fetch-runtime.ps1 -Force` で取り直す。
+Nothing is on the GPU. Check that `doctor` finds the CUDA runtime DLLs, and look for CUDA
+device lines in `logs\gemma-mcp.log`. If the DLLs are missing, re-run
+`fetch-runtime.ps1 -Force`.
 
-### `out of memory` で落ちる
+### Out of memory
 
-VRAM が足りない。順に試す:
+In order:
 
-1. `runtime.ctx` を減らす (16384 → 8192 → 4096)
-2. より小さいモデルにする (12B → E4B → E2B)
-3. `runtime.ngl` を減らして一部を CPU に逃がす (99 → 24 など)
+1. Lower `runtime.ctx` (16384 -> 8192 -> 4096)
+2. Move to a smaller model (12B -> E4B -> E2B)
+3. Lower `runtime.ngl` to keep some layers on the CPU (99 -> 24, say)
 
-### 初回のツール呼び出しがタイムアウトする
+### The first tool call times out
 
-モデルのダウンロードが `timeouts.startup_ms` に収まっていない。
-先に `fetch-model.ps1` でダウンロードを済ませるか、`startup_ms` を増やす。
+The model download did not fit inside `timeouts.startup_ms`. Either download it up front
+with `fetch-model.ps1` or raise the timeout.
 
-### llama-server が残り続ける
+### llama-server keeps running
 
-通常は MCP クライアントが `gemma-mcp.exe` を終了させると Job Object の働きで
-`llama-server.exe` も道連れで終了する。それでも残る場合は次で止める。
+Normally the Job Object takes llama-server down with `gemma-mcp.exe`. If one survives:
 
 ```powershell
 Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process
 ```
 
-なお、`scripts\start-llama-server.cmd` などで**手動起動した llama-server は
-MCP サーバーの管理外**なので、道連れ終了の対象にならない (意図的な仕様)。
+A llama-server started by hand (through `scripts\start-llama-server.cmd`, for instance) is
+**deliberately** outside that lifecycle and is never killed.
 
-### ログ
+### Logs
 
-`logs\gemma-mcp.log` に MCP サーバーと llama-server の両方の出力が入る。
-詳細が必要なら `config\gemma.toml` の `[log] level = "debug"` にする。
+`logs\gemma-mcp.log` holds output from both the MCP server and llama-server. For more
+detail, set `[log] level = "debug"` in `config\gemma.toml`.

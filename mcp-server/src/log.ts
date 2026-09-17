@@ -18,13 +18,13 @@ function writeFile(line: string): void {
     mkdirSync(paths.logsDir, { recursive: true });
     appendFileSync(paths.logFile, line);
   } catch {
-    // 書き込み不可(読み取り専用メディアなど)ならファイル出力を諦め、stderr だけ使う。
+    // Read-only media and the like: give up on the file and keep using stderr.
     fileEnabled = false;
   }
 }
 
 /**
- * stdout は MCP の JSON-RPC 専用。ログは必ず stderr とファイルにだけ出す。
+ * stdout belongs to the MCP JSON-RPC stream. Logs only ever go to stderr and the log file.
  */
 function emit(level: LogLevel, message: string, detail?: unknown): void {
   const timestamp = new Date().toISOString();
@@ -50,7 +50,7 @@ export const log = {
   info: (message: string, detail?: unknown) => emit("info", message, detail),
   warn: (message: string, detail?: unknown) => emit("warn", message, detail),
   error: (message: string, detail?: unknown) => emit("error", message, detail),
-  /** llama-server の出力をそのまま転記する(レベル判定なし) */
+  /** Verbatim relay of llama-server output; no level filtering. */
   raw: (message: string) => {
     const line = `${new Date().toISOString()} [llama] ${message}\n`;
     writeFile(line);

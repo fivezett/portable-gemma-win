@@ -1,92 +1,106 @@
-# CI / CD とリリース
+# CI/CD and releases
 
-## ワークフロー
+## Workflows
 
-| ファイル | 役割 |
+| File | Role |
 |---|---|
-| `.github/workflows/build.yml` | 再利用可能ワークフロー。検査 → exe → zip / インストーラ |
-| `.github/workflows/ci.yml` | push / PR で `build.yml` を呼ぶ |
-| `.github/workflows/release.yml` | タグを打って GitHub Release を作る |
+| `.github/workflows/build.yml` | Reusable: check, build the executable, package |
+| `.github/workflows/ci.yml` | Calls `build.yml` on pushes and pull requests |
+| `.github/workflows/release.yml` | Tags and publishes a GitHub Release |
 
-### build.yml (再利用可能)
+### build.yml (reusable)
 
-3 つのジョブを直列に実行する。
+Three jobs in sequence.
 
-1. **test** (ubuntu) — `bun install --frozen-lockfile` → 型チェック (TypeScript 7) → テスト。
-   `package.json` のバージョンを出力として後続に渡す
-2. **exe** (windows) — `bun run build:win:native` で単一 exe を生成する。
-   Windows 上でビルドすることで `--windows-hide-console` が使え、
-   MCP クライアントから起動されたときにコンソールが出ない。
-   ビルド後に `--version` と `doctor` を実行して起動を確認する
-3. **package** (ubuntu) — exe をダウンロードし、持ち運び用 zip と NSIS インストーラを作り、
-   `SHA256SUMS.txt` を添えて artifact にする
+1. **test** (ubuntu) — `bun install --frozen-lockfile`, typecheck with TypeScript 7, run the
+   suite. Exports the version from `package.json` for the later jobs.
+2. **exe** (windows) — `bun run build:win:native` produces the single-file executable.
+   Building on Windows is what allows `--windows-hide-console`, so an MCP client launching
+   it over stdio does not flash a console window. The suite then runs **against that
+   executable** via `GEMMA_MCP_BIN`, and the reported version is compared with
+   `package.json`.
+3. **package** (ubuntu) — downloads the executable and runs `scripts/build.ts --package-only`,
+   the same script developers use, producing the portable archive, the NSIS installer and
+   `SHA256SUMS.txt`.
 
-exe の `--version` は `package.json` のバージョンと一致することを検証している。
-バージョンの実体は `mcp-server/package.json` だけで、`src/index.ts` は
-JSON import でそれを読む。二重管理にならない。
+Step 2's smoke test matters: compiling bundles everything into one module graph and changes
+evaluation order, which can break code that works perfectly from source. Only running the
+artifact catches it.
+
+The Bun version is pinned once, by `packageManager` in `mcp-server/package.json`; the
+workflows read it through `bun-version-file`.
 
 ### release.yml
 
-発火条件は 3 つ。
+Three entry paths:
 
-| 経路 | 動作 |
+| Path | Behaviour |
 |---|---|
-| `main` への push | `package.json` のバージョンにタグが無ければ、タグを打ってリリース |
-| `v*` タグの push | そのタグでリリース (タグと `package.json` の不一致は失敗させる) |
-| 手動実行 | バージョンを指定してリリース |
+| Push to `main` | If `package.json`'s version has no tag, create it and release |
+| Push of a `v*` tag | Release that tag; a mismatch with `package.json` fails the run |
+| Manual run | Release the given version |
 
-いずれの経路でも、タグが既に存在する場合は何もしない。二重リリースは起きない。
+An existing tag always means "do nothing", so a release never happens twice. That decision
+lives in `scripts/ci/release-plan.ts` rather than in YAML.
 
-バージョンにハイフンが含まれる場合 (`0.2.0-rc.1` など) は自動的にプレリリース扱いになる。
+A version containing a hyphen (`0.2.0-rc.1`) is published as a pre-release.
 
-リリースノートは `.github/release-notes-template.md` (ダウンロード表・セットアップ手順・
-チェックサム) の後ろに、GitHub が生成したコミット一覧を連結して作る。
+`scripts/ci/publish-release.ts` creates the tag, assembles the notes and publishes. The
+fixed part of the notes is `.github/release-notes-template.md` (downloads table, setup
+steps, checksums); GitHub's generated commit list is appended.
 
-添付される成果物:
+Assets attached to the release:
 
 - `portable-gemma-setup-<version>.exe`
 - `portable-gemma-win-x64-<version>.zip`
 - `gemma-mcp.exe`
 - `SHA256SUMS.txt`
 
-## リリース手順
+## Cutting a release
 
 ```bash
-./scripts/release.sh 0.2.0
+bun run scripts/release.ts 0.2.0
 ```
 
-バージョンを書き換え、型チェックとテストを通してからコミットする。あとは:
+That bumps the version, runs the typecheck and tests, and commits. Then:
 
 ```bash
-git push origin main          # main なら自動でタグとリリースが作られる
+git push origin main          # from main, tagging and publishing are automatic
 ```
 
-PR 経由で進める場合は、バージョンを上げた PR を main にマージすれば同じことが起きる。
-タグを明示したい場合は次でもよい。
+Going through a pull request works the same way: merging a version bump into `main`
+triggers the release. To be explicit instead:
 
 ```bash
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
-`./scripts/release.sh 0.2.0 --push` はコミットと push をまとめて行う。
+`bun run scripts/release.ts 0.2.0 --push` commits and pushes in one go.
 
-## ローカルでのビルド
+## Building locally
 
 ```bash
-./scripts/build.sh
+bun run scripts/build.ts
 ```
 
-CI と同じ成果物を Linux 上で生成する。`bun build --compile --target=bun-windows-x64` で
-クロスコンパイルし、`makensis` でインストーラを固める。
+Produces the same artifacts on Linux: `bun build --compile --target=bun-windows-x64` for the
+executable and `makensis` for the installer.
 
-CI との違いは `--windows-hide-console` が付かないことだけ (このフラグは Windows 上でのみ指定できる)。
-動作確認には影響しないが、配布する exe は CI のものを使うこと。
+The only difference from CI is `--windows-hide-console`, which can only be passed on
+Windows. It does not affect behaviour under test, but ship the CI-built executable.
 
-## 検査
+Useful flags:
 
-CI の `lint` ジョブで次を実行している。ローカルでも同じものを回せる。
+| Flag | Effect |
+|---|---|
+| `--package-only` | Skip checks and compilation; package an existing `dist/gemma-mcp.exe` |
+| `--skip-tests` | Compile without the typecheck and test steps |
+| `--native` | Use the Windows-only build; only works when running on Windows |
+
+## Linting
+
+The `lint` job runs actionlint, which also runs ShellCheck over the `run:` blocks. Locally:
 
 ```bash
-actionlint          # ワークフローの構文・式・run ブロック (ShellCheck 込み)
-shellcheck scripts/*.sh
+actionlint
 ```

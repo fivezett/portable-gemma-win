@@ -12,13 +12,13 @@ import {
 } from "./llama.ts";
 import { log } from "./log.ts";
 
-/** 生成系ツールで共通のサンプリング指定 */
+/** Sampling controls shared by every generating tool. */
 const samplingFields = {
-  temperature: z.number().min(0).max(2).optional().describe("低いほど決定的。既定は設定ファイルの値"),
+  temperature: z.number().min(0).max(2).optional().describe("Lower is more deterministic; defaults to the configured value"),
   top_p: z.number().min(0).max(1).optional(),
   top_k: z.number().int().min(0).optional(),
-  max_tokens: z.number().int().min(1).max(131072).optional().describe("生成する最大トークン数"),
-  stop: z.array(z.string()).max(8).optional().describe("この文字列が現れたら生成を打ち切る"),
+  max_tokens: z.number().int().min(1).max(131072).optional().describe("Maximum number of tokens to generate"),
+  stop: z.array(z.string()).max(8).optional().describe("Stop generation when one of these strings appears"),
 };
 
 const messageSchema = z.object({
@@ -34,7 +34,7 @@ type SamplingArgs = {
   stop?: string[] | undefined;
 };
 
-/** 進捗通知。progressToken が来ていないときは何もしない */
+/** Progress reporter; a no-op unless the client sent a progress token. */
 function progressReporter(ctx: ServerContext): ((accumulated: string, delta: string) => void) | undefined {
   const token = ctx.mcpReq._meta?.progressToken;
   if (token === undefined || token === null) return undefined;
@@ -50,7 +50,7 @@ function progressReporter(ctx: ServerContext): ((accumulated: string, delta: str
         params: {
           progressToken: token,
           progress: accumulated.length,
-          message: `生成中… ${accumulated.length} 文字`,
+          message: `Generating... ${accumulated.length} characters`,
         },
       })
       .catch(() => undefined);
@@ -70,11 +70,11 @@ function toSamplingOptions(args: SamplingArgs) {
 function textResult(result: CompletionResult) {
   const notes: string[] = [];
   if (result.finishReason === "length") {
-    notes.push("(max_tokens に達して打ち切られました)");
+    notes.push("(truncated: hit max_tokens)");
   }
   const text = notes.length > 0 ? `${result.text}\n\n${notes.join(" ")}` : result.text;
   return {
-    content: [{ type: "text" as const, text: text === "" ? "(空の応答)" : text }],
+    content: [{ type: "text" as const, text: text === "" ? "(empty response)" : text }],
   };
 }
 
@@ -83,11 +83,11 @@ function errorResult(error: unknown) {
     error instanceof LlamaError
       ? error.message
       : error instanceof Error && error.name === "AbortError"
-        ? "生成がキャンセル、またはタイムアウトしました。"
+        ? "Generation was cancelled or timed out."
         : error instanceof Error
           ? `${error.name}: ${error.message}`
           : String(error);
-  log.error("ツール実行に失敗しました", message);
+  log.error("Tool call failed", message);
   return { content: [{ type: "text" as const, text: message }], isError: true };
 }
 
@@ -108,13 +108,14 @@ export function registerTools(server: McpServer, llama: LlamaServer, config: Con
   server.registerTool(
     "gemma_ask",
     {
-      title: "Gemma に質問する",
+      title: "Ask Gemma",
       description:
-        "ローカルの Gemma に単発の質問を投げて回答を得る。要約・下書き・分類など、" +
-        "外部に出したくない内容や、安価に大量処理したい内容に向く。会話は保持しない。",
+        "Send a single prompt to the local Gemma model and get the answer back. " +
+        "Costs nothing per call and never leaves this machine, which makes it a good fit for " +
+        "summarising, drafting, classifying and other bulk or privacy-sensitive work. Stateless.",
       inputSchema: z.object({
-        prompt: z.string().min(1).describe("Gemma に渡す指示または質問"),
-        system: z.string().optional().describe("システムプロンプト(役割や出力形式の指定)"),
+        prompt: z.string().min(1).describe("The instruction or question for Gemma"),
+        system: z.string().optional().describe("System prompt: role, tone, output format"),
         ...samplingFields,
       }),
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -141,12 +142,12 @@ export function registerTools(server: McpServer, llama: LlamaServer, config: Con
   server.registerTool(
     "gemma_chat",
     {
-      title: "Gemma と多ターン対話する",
+      title: "Continue a conversation with Gemma",
       description:
-        "会話履歴をまとめて渡して続きを生成する。サーバー側は状態を持たないため、" +
-        "呼び出し側が messages に全履歴を含めること。",
+        "Continue a multi-turn conversation. The server keeps no state, so pass the full " +
+        "history in `messages` on every call.",
       inputSchema: z.object({
-        messages: z.array(messageSchema).min(1).describe("古い順に並べた会話履歴"),
+        messages: z.array(messageSchema).min(1).describe("Conversation history, oldest first"),
         ...samplingFields,
       }),
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -169,15 +170,16 @@ export function registerTools(server: McpServer, llama: LlamaServer, config: Con
   server.registerTool(
     "gemma_json",
     {
-      title: "Gemma で構造化出力を得る",
+      title: "Get structured output from Gemma",
       description:
-        "JSON Schema を渡し、それに従う JSON だけを生成させる。抽出・分類・整形に使う。" +
-        "llama.cpp 側で文法を強制するため、スキーマ外の出力は生成されない。",
+        "Generate JSON that conforms to the supplied JSON Schema. llama.cpp constrains decoding " +
+        "with a grammar, so output outside the schema cannot be produced. Use this for extraction, " +
+        "classification and normalisation.",
       inputSchema: z.object({
-        prompt: z.string().min(1).describe("抽出や分類の指示"),
+        prompt: z.string().min(1).describe("What to extract or classify"),
         schema: z
           .record(z.string(), z.unknown())
-          .describe("出力を縛る JSON Schema (例: {\"type\":\"object\",\"properties\":{...}})"),
+          .describe('JSON Schema for the result, e.g. {"type":"object","properties":{...}}'),
         system: z.string().optional(),
         temperature: z.number().min(0).max(2).optional(),
         max_tokens: z.number().int().min(1).max(131072).optional(),
@@ -211,15 +213,15 @@ export function registerTools(server: McpServer, llama: LlamaServer, config: Con
   server.registerTool(
     "gemma_vision",
     {
-      title: "Gemma で画像を読む",
+      title: "Ask Gemma about an image",
       description:
-        "画像について Gemma に質問する。image_path(ローカルの画像ファイル)か " +
-        "image_base64 のどちらかを指定する。mmproj が設定されている必要がある。",
+        "Ask a question about an image. Provide either `image_path` (a local file) or " +
+        "`image_base64`. Requires a multimodal projector (mmproj) to be loaded.",
       inputSchema: z.object({
-        prompt: z.string().min(1).describe("画像に対する質問や指示"),
-        image_path: z.string().optional().describe("ローカル画像ファイルの絶対パス"),
-        image_base64: z.string().optional().describe("base64 エンコードされた画像データ"),
-        mime_type: z.string().optional().describe("image_base64 を使う場合の MIME タイプ"),
+        prompt: z.string().min(1).describe("The question or instruction about the image"),
+        image_path: z.string().optional().describe("Absolute path to a local image file"),
+        image_base64: z.string().optional().describe("Base64-encoded image data"),
+        mime_type: z.string().optional().describe("MIME type to use with image_base64"),
         ...samplingFields,
       }),
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -233,13 +235,12 @@ export function registerTools(server: McpServer, llama: LlamaServer, config: Con
           dataUrl = `data:${mime};base64,${bytes.toString("base64")}`;
         } else if (args.image_base64) {
           const mime = args.mime_type ?? "image/png";
-          const payload = args.image_base64.startsWith("data:")
+          dataUrl = args.image_base64.startsWith("data:")
             ? args.image_base64
             : `data:${mime};base64,${args.image_base64}`;
-          dataUrl = payload;
         } else {
           return {
-            content: [{ type: "text" as const, text: "image_path か image_base64 のどちらかが必要です。" }],
+            content: [{ type: "text" as const, text: "Either image_path or image_base64 is required." }],
             isError: true,
           };
         }
@@ -263,22 +264,22 @@ export function registerTools(server: McpServer, llama: LlamaServer, config: Con
   );
 
   const statusOutput = z.object({
-    running: z.boolean().describe("llama-server が応答しているか"),
-    managed: z.boolean().describe("この MCP サーバーが起動したプロセスか"),
+    running: z.boolean().describe("Whether llama-server is answering"),
+    managed: z.boolean().describe("Whether this MCP server started that process"),
     endpoint: z.string(),
     model: z.string().nullable(),
     context_size: z.number().nullable(),
-    configured_model: z.string().describe("設定上のモデル指定 (ローカルパスまたは HF 指定)"),
+    configured_model: z.string().describe("Configured model: local path or Hugging Face spec"),
     autostart: z.boolean(),
   });
 
   server.registerTool(
     "gemma_status",
     {
-      title: "Gemma の状態を確認する",
+      title: "Check Gemma's status",
       description:
-        "llama-server が動いているか、どのモデルが読み込まれているか、コンテキスト長はいくつかを返す。" +
-        "生成が失敗するときの切り分けに使う。",
+        "Report whether llama-server is running, which model is loaded and how large the context is. " +
+        "Use it to diagnose failing generations.",
       inputSchema: z.object({}),
       outputSchema: statusOutput,
       annotations: { readOnlyHint: true, openWorldHint: false },
